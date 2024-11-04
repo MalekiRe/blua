@@ -3,7 +3,7 @@ use bevy::asset::{AssetLoader, AssetPath, LoadContext, UntypedAssetId, VisitAsse
 use bevy::prelude::*;
 use bevy::utils::ConditionalSendFuture;
 use flume::{Receiver, Sender};
-use piccolo::{StashedClosure, StashedExecutor};
+use piccolo::{StashedClosure, StashedExecutor, StashedFunction};
 use send_wrapper::SendWrapper;
 
 pub struct LuaAssetLoader {
@@ -34,7 +34,7 @@ impl AssetLoader for LuaAssetLoader {
 
 #[derive(TypePath)]
 pub struct LuaScript {
-    pub exec: SendWrapper<StashedExecutor>,
+    /*pub exec: SendWrapper<StashedFunction>,*/
 }
 
 impl VisitAssetDependencies for LuaScript {
