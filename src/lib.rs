@@ -3,15 +3,17 @@ mod reflect_stuff;
 pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
-use crate::reflect_stuff::{LuaSystems, ReflectPlugin, ReflectPtr, WorldMut};
-use crate::userdata_stuff::UserDataPtr;
+use crate::reflect_stuff::{LuaSystems, PtrState, ReflectPlugin, ReflectPtr, WorldMut};
+use crate::userdata_stuff::{UserDataPtr, ValueExt};
 use bevy::prelude::*;
 use bevy::reflect::ReflectFromPtr;
 use piccolo::{
     Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Variadic,
 };
+use std::cell::RefCell;
 use std::io::Cursor;
 use std::ops::DerefMut;
+use std::rc::Rc;
 use std::sync::Mutex;
 
 pub struct LuaPlugin;
@@ -62,6 +64,7 @@ pub fn lua_asset_handling(world: &mut World) {
 
 pub struct IteratorState {
     pub components: Vec<Vec<ReflectPtr>>,
+    pub ptr_state: Rc<RefCell<PtrState>>,
 }
 
 impl IteratorState {
@@ -94,11 +97,14 @@ pub fn run_every_tick(world: &mut World) {
     let app_registry = world.get_resource::<AppTypeRegistry>().unwrap().clone();
     for awa in lua_systems.iter_mut() {
         let stashed_function = &awa.lua_func;
-        let exec = lua
+        let mut ptr_states = vec![];
+        let (exec) = lua
             .try_enter(|ctx| {
                 let func = ctx.fetch(stashed_function);
                 let mut things = vec![];
                 for (query, component_infos) in &mut awa.queries {
+                    let ptr_state = Rc::new(RefCell::new(PtrState::Valid));
+                    let ptr_state2 = ptr_state.clone();
                     let items = query.iter_mut(world).collect::<Vec<_>>();
                     let items = items
                         .into_iter()
@@ -111,7 +117,7 @@ pub fn run_every_tick(world: &mut World) {
                                 let reflect_from_ptr =
                                     reflect_data.data::<ReflectFromPtr>().unwrap();
                                 let value = unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
-                                values.push(ReflectPtr::new(value));
+                                values.push(ReflectPtr::new(value, ptr_state2.clone()));
                             }
                             values
                         })
@@ -119,15 +125,24 @@ pub fn run_every_tick(world: &mut World) {
                     let iterator_state = ctx.stash(UserData::new_static(
                         &ctx,
                         Mutex::new(IteratorState {
-                            components: items.clone(),
+                            components: items,
+                            ptr_state: ptr_state.clone(),
                         }),
                     ));
+                    ptr_states.push(ptr_state);
                     let t = Table::new(&ctx);
                     t.set(
                         ctx,
                         "iter",
                         Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
                             let iterator_state = ctx.fetch(&iterator_state).into_value(ctx);
+                            *iterator_state
+                                .as_static_user_data::<Mutex<IteratorState>>()
+                                .unwrap()
+                                .lock()
+                                .unwrap()
+                                .ptr_state
+                                .borrow_mut() = PtrState::Valid;
                             stack.replace(ctx, (IteratorState::iterator_fn(&ctx), iterator_state));
 
                             Ok(CallbackReturn::Return)
@@ -140,6 +155,9 @@ pub fn run_every_tick(world: &mut World) {
             })
             .unwrap();
         lua.execute::<()>(&exec).unwrap();
+        for ptr_state in ptr_states.iter() {
+            *ptr_state.borrow_mut() = PtrState::Invalid;
+        }
     }
 
     world.insert_non_send_resource(lua_systems);

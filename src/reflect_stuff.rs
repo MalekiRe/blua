@@ -9,6 +9,7 @@ use piccolo::{
 };
 use std::any::TypeId;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Copy, Clone, Debug)]
 pub enum ComponentType {
@@ -30,21 +31,29 @@ pub struct LuaSystems {
 }
 
 pub struct ReflectPtr {
-    data: RefCell<Option<*mut dyn Reflect>>,
+    data: *mut dyn Reflect,
     path: String,
+    ptr_state: Rc<RefCell<PtrState>>,
+}
+
+#[derive(PartialEq, Debug)]
+pub enum PtrState {
+    Valid,
+    Invalid,
 }
 
 impl ReflectPtr {
-    pub fn new(reflect: &mut dyn Reflect) -> Self {
+    pub fn new(reflect: &mut dyn Reflect, ptr_state: Rc<RefCell<PtrState>>) -> Self {
         Self {
-            data: RefCell::new(Some(reflect as *mut dyn Reflect)),
+            data: reflect as *mut dyn Reflect,
             path: "".to_string(),
+            ptr_state,
         }
     }
-    pub fn take(&self) -> Option<()> {
-        self.data.take().map(|_| ())
-    }
     pub fn get_field_value_ref(&self) -> &dyn Reflect {
+        if &*self.ptr_state.borrow() == &PtrState::Invalid {
+            panic!("invalid pointer state, saved outside of valid area")
+        }
         let mut reflect = unsafe { &*self.get_data() };
         for field in self.path.split(".") {
             if field.is_empty() {
@@ -63,6 +72,9 @@ impl ReflectPtr {
         reflect
     }
     pub fn get_field_value_mut(&self) -> &mut dyn Reflect {
+        if &*self.ptr_state.borrow() == &PtrState::Invalid {
+            panic!("invalid pointer state, saved outside of valid area")
+        }
         let mut reflect = unsafe { &mut *self.get_data() };
         for field in self.path.split(".") {
             if field.is_empty() {
@@ -86,7 +98,7 @@ impl UserDataPtr for ReflectPtr {
     type Data = dyn Reflect;
 
     fn get_data(&self) -> *mut Self::Data {
-        self.data.borrow().unwrap()
+        self.data
     }
 
     fn edit_metatable<'gc>(&self, _table: &mut Table<'gc>) {}
@@ -110,47 +122,14 @@ impl UserDataPtr for ReflectPtr {
         match new_value {
             Value::Number(n) => {
                 let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
-                for field in reflect_ptr.path.split(".") {
-                    reflect_field = reflect_field
-                        .as_reflect_mut()
-                        .reflect_mut()
-                        .as_struct()
-                        .unwrap()
-                        .field_mut(field)
-                        .unwrap()
-                        .try_as_reflect_mut()
-                        .unwrap();
-                }
                 reflect_field.set(Box::new(n as f32)).unwrap();
             }
             Value::Integer(i) => {
                 let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
-                for field in reflect_ptr.path.split(".") {
-                    reflect_field = reflect_field
-                        .as_reflect_mut()
-                        .reflect_mut()
-                        .as_struct()
-                        .unwrap()
-                        .field_mut(field)
-                        .unwrap()
-                        .try_as_reflect_mut()
-                        .unwrap();
-                }
                 reflect_field.set(Box::new(i as i32)).unwrap();
             }
             Value::Boolean(b) => {
                 let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
-                for field in reflect_ptr.path.split(".") {
-                    reflect_field = reflect_field
-                        .as_reflect_mut()
-                        .reflect_mut()
-                        .as_struct()
-                        .unwrap()
-                        .field_mut(field)
-                        .unwrap()
-                        .try_as_reflect_mut()
-                        .unwrap();
-                }
                 reflect_field.set(Box::new(b)).unwrap();
             }
             Value::String(_s) => {
@@ -160,6 +139,11 @@ impl UserDataPtr for ReflectPtr {
                 if reflect_ptr.path.is_empty() {
                     reflect_ptr.data = data.downcast_static::<ReflectPtr>().unwrap().data.clone();
                     reflect_ptr.path = String::default();
+                    reflect_ptr.ptr_state = data
+                        .downcast_static::<ReflectPtr>()
+                        .unwrap()
+                        .ptr_state
+                        .clone();
                 } else {
                     let reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
                     let reflect = data
@@ -179,8 +163,9 @@ impl UserDataPtr for ReflectPtr {
 impl Clone for ReflectPtr {
     fn clone(&self) -> Self {
         Self {
-            data: RefCell::new(Some(self.data.borrow_mut().unwrap())),
+            data: self.data,
             path: self.path.clone(),
+            ptr_state: self.ptr_state.clone(),
         }
     }
 }
