@@ -3,12 +3,12 @@ use crate::LuaVm;
 use bevy::ecs::component::ComponentId;
 use bevy::ecs::world::FilteredEntityMut;
 use bevy::prelude::*;
-use piccolo::error::LuaError;
 use piccolo::{
     Callback, CallbackReturn, Context, FromValue, Function, IntoValue, StashedFunction, Table,
-    TypeError, UserData, Value, Variadic,
+    TypeError, UserData, Value,
 };
 use std::any::TypeId;
+use std::cell::RefCell;
 
 #[derive(Copy, Clone, Debug)]
 pub enum ComponentType {
@@ -30,19 +30,22 @@ pub struct LuaSystems {
 }
 
 pub struct ReflectPtr {
-    data: Option<*mut dyn Reflect>,
+    data: RefCell<Option<*mut dyn Reflect>>,
     path: String,
 }
 
 impl ReflectPtr {
     pub fn new(reflect: &mut dyn Reflect) -> Self {
         Self {
-            data: Some(reflect as *mut dyn Reflect),
+            data: RefCell::new(Some(reflect as *mut dyn Reflect)),
             path: "".to_string(),
         }
     }
+    pub fn take(&self) -> Option<()> {
+        self.data.take().map(|_| ())
+    }
     pub fn get_field_value_ref(&self) -> &dyn Reflect {
-        let mut reflect = unsafe { &*self.data.unwrap() };
+        let mut reflect = unsafe { &*self.get_data() };
         for field in self.path.split(".") {
             if field.is_empty() {
                 continue;
@@ -60,7 +63,7 @@ impl ReflectPtr {
         reflect
     }
     pub fn get_field_value_mut(&self) -> &mut dyn Reflect {
-        let mut reflect = unsafe { &mut *self.data.unwrap() };
+        let mut reflect = unsafe { &mut *self.get_data() };
         for field in self.path.split(".") {
             if field.is_empty() {
                 continue;
@@ -83,10 +86,10 @@ impl UserDataPtr for ReflectPtr {
     type Data = dyn Reflect;
 
     fn get_data(&self) -> *mut Self::Data {
-        self.data.unwrap()
+        self.data.borrow().unwrap()
     }
 
-    fn edit_metatable<'gc>(&self, table: &mut Table<'gc>) {}
+    fn edit_metatable<'gc>(&self, _table: &mut Table<'gc>) {}
 
     fn lua_to_string(&self) -> String {
         format!("{:?}", self.get_field_value_ref())
@@ -100,7 +103,7 @@ impl UserDataPtr for ReflectPtr {
         reflect_ptr.into_value(ctx)
     }
 
-    fn lua_new_index<'gc>(&self, ctx: &Context<'gc>, key: &str, new_value: Value<'gc>) {
+    fn lua_new_index<'gc>(&self, _ctx: &Context<'gc>, key: &str, new_value: Value<'gc>) {
         let mut reflect_ptr = self.clone();
         reflect_ptr.path.push('.');
         reflect_ptr.path.push_str(key);
@@ -150,15 +153,15 @@ impl UserDataPtr for ReflectPtr {
                 }
                 reflect_field.set(Box::new(b)).unwrap();
             }
-            Value::String(s) => {
+            Value::String(_s) => {
                 todo!()
             }
-            Value::UserData(mut data) => {
+            Value::UserData(data) => {
                 if reflect_ptr.path.is_empty() {
                     reflect_ptr.data = data.downcast_static::<ReflectPtr>().unwrap().data.clone();
                     reflect_ptr.path = String::default();
                 } else {
-                    let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
+                    let reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
                     let reflect = data
                         .downcast_static::<ReflectPtr>()
                         .unwrap()
@@ -176,7 +179,7 @@ impl UserDataPtr for ReflectPtr {
 impl Clone for ReflectPtr {
     fn clone(&self) -> Self {
         Self {
-            data: self.data,
+            data: RefCell::new(Some(self.data.borrow_mut().unwrap())),
             path: self.path.clone(),
         }
     }
@@ -221,7 +224,7 @@ impl UserDataPtr for WorldMut {
         self.this.unwrap()
     }
 
-    fn edit_metatable<'gc>(&self, table: &mut Table<'gc>) {}
+    fn edit_metatable<'gc>(&self, _table: &mut Table<'gc>) {}
 
     fn lua_to_string(&self) -> String {
         "app".to_string()
@@ -235,7 +238,7 @@ impl UserDataPtr for WorldMut {
         }
     }
 
-    fn lua_new_index<'gc>(&self, ctx: &Context<'gc>, key: &str, new_value: Value<'gc>) {}
+    fn lua_new_index<'gc>(&self, _ctx: &Context<'gc>, _key: &str, _new_value: Value<'gc>) {}
 }
 
 impl WorldMut {
@@ -250,8 +253,7 @@ impl WorldMut {
     }
     pub fn register_system<'gc>(ctx: &Context<'gc>) -> Callback<'gc> {
         Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
-            let (mut this, system, system_params): (&WorldMut, Value, Table) =
-                stack.consume(ctx)?;
+            let (this, system, system_params): (&WorldMut, Value, Table) = stack.consume(ctx)?;
 
             let mut lua_systems = unsafe { &mut *this.get_data() }
                 .get_non_send_resource_mut::<LuaSystems>()
@@ -312,14 +314,14 @@ impl Plugin for ReflectPlugin {
 }
 
 fn register_components(world: &mut World) {
-    world.resource_scope(|world, mut registry: Mut<AppTypeRegistry>| {
+    world.resource_scope(|world, registry: Mut<AppTypeRegistry>| {
         let mut lua = world.remove_non_send_resource::<LuaVm>().unwrap();
         for item in registry.read().iter() {
             let Some(component_id) = world.components().get_id(item.type_id()) else {
                 continue;
             };
             let type_id = item.type_id();
-            let mut things = item
+            let things = item
                 .type_info()
                 .type_path()
                 .split("::")

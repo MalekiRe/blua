@@ -4,18 +4,15 @@ pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
 use crate::reflect_stuff::{LuaSystems, ReflectPlugin, ReflectPtr, WorldMut};
-use crate::userdata_stuff::{UserDataPtr, UserDataWrapper};
-use bevy::asset::AssetLoader;
+use crate::userdata_stuff::UserDataPtr;
 use bevy::prelude::*;
 use bevy::reflect::ReflectFromPtr;
 use piccolo::{
-    Callback, CallbackReturn, Closure, Context, Executor, Function, IntoValue, Lua,
-    StashedCallback, StashedFunction, Table, UserData, Value, Variadic,
+    Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Variadic,
 };
-use send_wrapper::SendWrapper;
 use std::io::Cursor;
-use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex};
+use std::ops::DerefMut;
+use std::sync::Mutex;
 
 pub struct LuaPlugin;
 
@@ -34,33 +31,12 @@ pub fn insert_lua_vm(world: &mut World) {
     world.insert_non_send_resource(LuaVm { lua: Lua::full() });
 }
 
-/*
-local app = ...
-local system = app:system():resource("some_resource", SomeResource):query("my_query", Query:entity():component(ComponentA):component(Component(B)):with(ComponentC):without(ComponentD)
-app:register_system(Update, my_system, system);
-
-
-function my_system(some_resource, my_query)
-  for entity, componenta, componentb in my_query:iter()
-    print(entity)
-  end
-  local some_val = some_resource:get_something()
-end
- */
-
-//TODO
-#[derive(Clone)]
-struct LuaSystem;
-
 pub fn lua_asset_handling(world: &mut World) {
     world.resource_scope(|world, lua_asset_communicator: Mut<LuaAssetCommunicator>| {
         let Some(mut lua) = world.remove_non_send_resource::<LuaVm>() else {
             return;
         };
-        /*let Some(app_info) = world.remove_non_send_resource::<LuaSystems>() else {
-            return;
-        };*/
-        //let lua_app = LuaApp::new(world, Arc::new(Mutex::new(Some(app_info))));
+
         let mut lua_app = WorldMut::new(world);
         for (new_script_bytes, new_script_path) in
             lua_asset_communicator.lua_script_bytes_rx.try_iter()
@@ -77,13 +53,6 @@ pub fn lua_asset_handling(world: &mut World) {
                 })
                 .unwrap();
             lua.execute::<()>(&exec).unwrap();
-            let lua_script = LuaScript {
-                /*exec: SendWrapper::new(exec),*/
-            };
-            lua_asset_communicator
-                .lua_script_tx
-                .send(lua_script)
-                .unwrap();
         }
         lua_app.this.take().unwrap();
         drop(lua_app);
@@ -100,10 +69,10 @@ impl IteratorState {
         Callback::from_fn(&ctx, |ctx, _fuel, mut stack| {
             let state: UserData = stack.consume(ctx)?;
 
-            let mut state = state.downcast_static::<Mutex<IteratorState>>()?;
+            let state = state.downcast_static::<Mutex<IteratorState>>()?;
 
             let mut state = state.lock().unwrap();
-            let mut state = state.deref_mut();
+            let state = state.deref_mut();
             if state.components.is_empty() {
                 return Ok(CallbackReturn::Return);
             }
@@ -121,11 +90,9 @@ impl IteratorState {
 pub fn run_every_tick(world: &mut World) {
     let mut lua = world.remove_non_send_resource::<LuaVm>().unwrap();
 
-    //let mut lua_scripts = world.get_resource::<Assets<LuaScript>>().unwrap();
-
     let mut lua_systems = world.remove_non_send_resource::<LuaSystems>().unwrap();
     let app_registry = world.get_resource::<AppTypeRegistry>().unwrap().clone();
-    for mut awa in lua_systems.iter_mut() {
+    for awa in lua_systems.iter_mut() {
         let stashed_function = &awa.lua_func;
         let exec = lua
             .try_enter(|ctx| {
@@ -155,7 +122,7 @@ pub fn run_every_tick(world: &mut World) {
                             components: items.clone(),
                         }),
                     ));
-                    let mut t = Table::new(&ctx);
+                    let t = Table::new(&ctx);
                     t.set(
                         ctx,
                         "iter",
