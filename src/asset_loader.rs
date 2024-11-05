@@ -25,7 +25,9 @@ impl AssetLoader for LuaAssetLoader {
         Box::pin(async move {
             let mut bytes = vec![];
             reader.read_to_end(&mut bytes).await?;
-            self.lua_script_bytes_tx.send((bytes, load_context.asset_path().clone())).unwrap();
+            self.lua_script_bytes_tx
+                .send((bytes, load_context.asset_path().clone()))
+                .unwrap();
             let lua_script = self.lua_script_rx.recv_async().await?;
             Ok(lua_script)
         })
@@ -33,9 +35,7 @@ impl AssetLoader for LuaAssetLoader {
 }
 
 #[derive(TypePath)]
-pub struct LuaScript {
-    /*pub exec: SendWrapper<StashedFunction>,*/
-}
+pub struct LuaScript {/*pub exec: SendWrapper<StashedFunction>,*/}
 
 impl VisitAssetDependencies for LuaScript {
     fn visit_dependencies(&self, visit: &mut impl FnMut(UntypedAssetId)) {}
