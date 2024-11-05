@@ -325,7 +325,8 @@ fn register_components(world: &mut World) {
                 .split("::")
                 .collect::<Vec<&str>>();
 
-            println!("{:?}", things);
+            // uncomment this if you wanna see the path of all the things aviable to you
+            //println!("{:?}", things);
 
             lua.try_enter(|ctx| {
                 let mut lua_table = ctx.globals();
