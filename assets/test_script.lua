@@ -9,6 +9,7 @@ function second_system(my_q)
     for t, stretch in my_q:iter() do
         print(t.translation.x)
         print(stretch)
+        stretch.x = t.translation.x
     end
 end
 

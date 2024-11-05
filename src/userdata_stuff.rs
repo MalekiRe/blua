@@ -54,9 +54,9 @@ where
                 *ctx,
                 "__newindex",
                 Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
-                    let (mut this, key): (&Self, Value) = stack.consume(ctx)?;
+                    let (mut this, key, new_value): (&Self, Value, Value) = stack.consume(ctx)?;
                     let s = key.to_string();
-                    stack.push_front(this.lua_new_index(&ctx, &s));
+                    this.lua_new_index(&ctx, &s, new_value);
 
                     Ok(CallbackReturn::Return)
                 }),
@@ -74,7 +74,7 @@ where
 
     fn lua_index<'gc>(&self, ctx: &Context<'gc>, key: &str) -> Value<'gc>;
 
-    fn lua_new_index<'gc>(&self, ctx: &Context<'gc>, key: &str) -> Value<'gc>;
+    fn lua_new_index<'gc>(&self, ctx: &Context<'gc>, key: &str, new_value: Value<'gc>);
 
     fn from_value_2<'gc>(_ctx: Context<'gc>, value: Value<'gc>) -> Result<&'gc Self, TypeError> {
         value.as_static_user_data::<Self>()

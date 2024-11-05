@@ -1,11 +1,11 @@
 use bevy::app::App;
 use bevy::asset::{AssetServer, Handle};
+use bevy::prelude::ReflectComponent;
+use bevy::prelude::*;
 use bevy::prelude::{Commands, Component, Reflect, Res, Startup, Transform, Vec3};
 use bevy::DefaultPlugins;
 use blua::asset_loader::LuaScript;
 use blua::LuaPlugin;
-use bevy::prelude::ReflectComponent;
-use bevy::prelude::*;
 fn main() {
     let mut app = App::default();
     app.add_plugins(DefaultPlugins).add_plugins(LuaPlugin);
@@ -20,7 +20,6 @@ pub struct Stretch {
     pub x: f32,
     pub y: f32,
 }
-
 
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
     commands.spawn((

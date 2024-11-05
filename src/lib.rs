@@ -7,12 +7,15 @@ use crate::reflect_stuff::{LuaSystems, ReflectPlugin, ReflectPtr, WorldMut};
 use crate::userdata_stuff::{UserDataPtr, UserDataWrapper};
 use bevy::asset::AssetLoader;
 use bevy::prelude::*;
-use piccolo::{Callback, CallbackReturn, Closure, Context, Executor, Function, IntoValue, Lua, StashedCallback, StashedFunction, Table, UserData, Value, Variadic};
+use bevy::reflect::ReflectFromPtr;
+use piccolo::{
+    Callback, CallbackReturn, Closure, Context, Executor, Function, IntoValue, Lua,
+    StashedCallback, StashedFunction, Table, UserData, Value, Variadic,
+};
 use send_wrapper::SendWrapper;
 use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex};
-use bevy::reflect::ReflectFromPtr;
 
 pub struct LuaPlugin;
 
@@ -115,7 +118,6 @@ impl IteratorState {
     }
 }
 
-
 pub fn run_every_tick(world: &mut World) {
     let mut lua = world.remove_non_send_resource::<LuaVm>().unwrap();
 
@@ -134,28 +136,37 @@ pub fn run_every_tick(world: &mut World) {
                     let items = items
                         .into_iter()
                         .map(|mut a| {
-
                             let mut values = vec![];
                             for (component_id, type_id) in component_infos.iter() {
                                 let mut x = a.get_mut_by_id(*component_id).unwrap();
                                 let app_registry = app_registry.read();
                                 let reflect_data = app_registry.get(*type_id).unwrap();
-                                let reflect_from_ptr = reflect_data.data::<ReflectFromPtr>().unwrap();
+                                let reflect_from_ptr =
+                                    reflect_data.data::<ReflectFromPtr>().unwrap();
                                 let value = unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
                                 values.push(ReflectPtr::new(value));
                             }
                             values
                         })
                         .collect::<Vec<_>>();
-                    let iterator_state = ctx.stash(UserData::new_static(&ctx, Mutex::new(IteratorState { components: items.clone() })));
+                    let iterator_state = ctx.stash(UserData::new_static(
+                        &ctx,
+                        Mutex::new(IteratorState {
+                            components: items.clone(),
+                        }),
+                    ));
                     let mut t = Table::new(&ctx);
-                    t.set(ctx, "iter", Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
-
+                    t.set(
+                        ctx,
+                        "iter",
+                        Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
                             let iterator_state = ctx.fetch(&iterator_state).into_value(ctx);
                             stack.replace(ctx, (IteratorState::iterator_fn(&ctx), iterator_state));
 
-                        Ok(CallbackReturn::Return)
-                    })).unwrap();
+                            Ok(CallbackReturn::Return)
+                        }),
+                    )
+                    .unwrap();
                     things.push(t);
                 }
                 Ok(ctx.stash(Executor::start(ctx, func, Variadic(things))))
