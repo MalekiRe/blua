@@ -5,6 +5,7 @@ edition = "2021"
 authors = ["Malek"]
 license = "MIT OR Apache-2.0"
 description = "bevy lua integration for doing systems in lua"
+repository = "https://github.com/MalekiRe/blua"
 
 [dependencies]
 bevy = "0.15.0-rc.2"
