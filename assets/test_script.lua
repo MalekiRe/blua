@@ -30,7 +30,7 @@ function third(q1, q2)
         --print(s.x)
         print(s:get_sum())
         print("and sum with is")
-        print(s:get_sum_with(4200.0))
+        print(s:get_sum_with(4370.0))
     end
 end
 

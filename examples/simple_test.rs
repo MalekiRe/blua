@@ -8,7 +8,11 @@ use blua::asset_loader::LuaScript;
 use blua::{AppExtensionFunctionRegisterTrait, LuaPlugin};
 fn main() {
     let mut app = App::default();
-    app.add_plugins(DefaultPlugins).add_plugins(LuaPlugin);
+    app.add_plugins(DefaultPlugins.set(AssetPlugin {
+        watch_for_changes_override: Some(true),
+        ..default()
+    }))
+    .add_plugins(LuaPlugin);
     app.add_systems(Startup, setup);
     app.register_type::<Stretch>();
     app.world_mut().register_component::<Stretch>();

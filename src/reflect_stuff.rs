@@ -1,4 +1,4 @@
-use crate::userdata_stuff::UserDataPtr;
+use crate::userdata_stuff::{UserDataPtr, ValueExt};
 use crate::LuaVm;
 use bevy::ecs::component::ComponentId;
 use bevy::ecs::prelude::AppFunctionRegistry;
@@ -27,11 +27,6 @@ pub struct LuaSystem {
         QueryState<FilteredEntityMut<'static>>,
         Vec<(ComponentId, TypeId)>,
     )>,
-}
-
-#[derive(Default, Deref, DerefMut)]
-pub struct LuaSystems {
-    lua_systems: Vec<LuaSystem>,
 }
 
 pub struct ReflectPtr {
@@ -352,11 +347,12 @@ impl WorldMut {
     }
     pub fn register_system<'gc>(ctx: &Context<'gc>) -> Callback<'gc> {
         Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
+            let systems_vec = ctx
+                .globals()
+                .get(ctx, "__systems_vec")
+                .as_static_user_data::<Rc<RefCell<Option<Vec<LuaSystem>>>>>()?;
+            let systems_vec = systems_vec.clone();
             let (this, system, system_params): (&WorldMut, Value, Table) = stack.consume(ctx)?;
-
-            let mut lua_systems = unsafe { &mut *this.get_data() }
-                .get_non_send_resource_mut::<LuaSystems>()
-                .unwrap();
 
             let function: Function = Function::from_value(ctx, system)?;
 
@@ -393,7 +389,7 @@ impl WorldMut {
 
             let stashed_function = ctx.stash(function);
 
-            lua_systems.lua_systems.push(LuaSystem {
+            systems_vec.borrow_mut().as_mut().unwrap().push(LuaSystem {
                 lua_func: stashed_function,
                 queries,
             });
@@ -407,7 +403,6 @@ pub struct ReflectPlugin;
 
 impl Plugin for ReflectPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_non_send_resource(LuaSystems::default());
         app.add_systems(PostStartup, register_components);
     }
 }

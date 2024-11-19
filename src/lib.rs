@@ -3,16 +3,16 @@ mod reflect_stuff;
 pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
-use crate::reflect_stuff::{
-    LuaSystems, ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, WorldMut,
-};
+use crate::reflect_stuff::{ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, WorldMut};
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
 use bevy::prelude::*;
 use bevy::reflect::func::{DynamicFunction, FunctionRegistry};
 use bevy::reflect::ReflectFromPtr;
 use piccolo::{
-    Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Variadic,
+    Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Value,
+    Variadic,
 };
+use send_wrapper::SendWrapper;
 use std::any::TypeId;
 use std::cell::RefCell;
 use std::io::Cursor;
@@ -32,6 +32,8 @@ impl Plugin for LuaPlugin {
         app.add_systems(Update, run_every_tick);
     }
 }
+
+/*struct LuaScript(Handle<Lua>)*/
 
 pub trait AppExtensionFunctionRegisterTrait {
     fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>);
@@ -71,8 +73,11 @@ pub fn lua_asset_handling(world: &mut World) {
         for (new_script_bytes, new_script_path) in
             lua_asset_communicator.lua_script_bytes_rx.try_iter()
         {
+            let mut systems_vec = Rc::new(RefCell::new(Some(Vec::new())));
             let exec = lua
                 .try_enter(|ctx| {
+                    let user_data = UserData::new_static(&ctx, systems_vec.clone());
+                    ctx.set_global("__systems_vec", user_data).unwrap();
                     let lua_app_value = lua_app.clone().into_value(&ctx);
                     let closure = Closure::load(
                         ctx,
@@ -83,7 +88,18 @@ pub fn lua_asset_handling(world: &mut World) {
                 })
                 .unwrap();
             lua.execute::<()>(&exec).unwrap();
+            lua_asset_communicator
+                .lua_script_tx
+                .send(LuaScript {
+                    systems: SendWrapper::new(systems_vec.take().unwrap()),
+                })
+                .unwrap();
         }
+        lua.try_enter(|ctx| {
+            ctx.set_global("__systems_vec", Value::Nil).unwrap();
+            Ok(CallbackReturn::Return)
+        })
+        .unwrap();
         lua_app.this.take().unwrap();
         drop(lua_app);
         world.insert_non_send_resource(lua);
@@ -121,83 +137,90 @@ impl IteratorState {
 pub fn run_every_tick(world: &mut World) {
     let mut lua = world.remove_non_send_resource::<LuaVm>().unwrap();
 
-    let mut lua_systems = world.remove_non_send_resource::<LuaSystems>().unwrap();
+    let mut lua_scripts = world.remove_resource::<Assets<LuaScript>>().unwrap();
+
     let app_registry = world.get_resource::<AppTypeRegistry>().unwrap().clone();
     let object_function_registry = world
         .get_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>()
         .unwrap()
         .clone();
-    for awa in lua_systems.iter_mut() {
-        let stashed_function = &awa.lua_func;
-        let mut ptr_states = vec![];
-        let ofr1 = object_function_registry.clone();
-        let (exec) = lua
-            .try_enter(|ctx| {
-                let func = ctx.fetch(stashed_function);
-                let mut things = vec![];
-                for (query, component_infos) in &mut awa.queries {
-                    let ptr_state = Rc::new(RefCell::new(PtrState::Valid));
-                    let ptr_state2 = ptr_state.clone();
-                    let items = query.iter_mut(world).collect::<Vec<_>>();
-                    let items = items
-                        .into_iter()
-                        .map(|mut a| {
-                            let mut values = vec![];
-                            for (component_id, type_id) in component_infos.iter() {
-                                let mut x = a.get_mut_by_id(*component_id).unwrap();
-                                let app_registry = app_registry.read();
-                                let reflect_data = app_registry.get(*type_id).unwrap();
-                                let reflect_from_ptr =
-                                    reflect_data.data::<ReflectFromPtr>().unwrap();
-                                let value = unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
-                                values.push(ReflectPtr::new(
-                                    value,
-                                    ptr_state2.clone(),
-                                    ofr1.clone(),
-                                ));
-                            }
-                            values
-                        })
-                        .collect::<Vec<_>>();
-                    let iterator_state = ctx.stash(UserData::new_static(
-                        &ctx,
-                        Mutex::new(IteratorState {
-                            components: items,
-                            ptr_state: ptr_state.clone(),
-                        }),
-                    ));
-                    ptr_states.push(ptr_state);
-                    let t = Table::new(&ctx);
-                    t.set(
-                        ctx,
-                        "iter",
-                        Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
-                            let iterator_state = ctx.fetch(&iterator_state).into_value(ctx);
-                            *iterator_state
-                                .as_static_user_data::<Mutex<IteratorState>>()
-                                .unwrap()
-                                .lock()
-                                .unwrap()
-                                .ptr_state
-                                .borrow_mut() = PtrState::Valid;
-                            stack.replace(ctx, (IteratorState::iterator_fn(&ctx), iterator_state));
+    for (_, awa) in lua_scripts.iter_mut() {
+        for awa in awa.systems.iter_mut() {
+            let stashed_function = &awa.lua_func;
+            let mut ptr_states = vec![];
+            let ofr1 = object_function_registry.clone();
+            let (exec) = lua
+                .try_enter(|ctx| {
+                    let func = ctx.fetch(stashed_function);
+                    let mut things = vec![];
+                    for (query, component_infos) in &mut awa.queries {
+                        let ptr_state = Rc::new(RefCell::new(PtrState::Valid));
+                        let ptr_state2 = ptr_state.clone();
+                        let items = query.iter_mut(world).collect::<Vec<_>>();
+                        let items = items
+                            .into_iter()
+                            .map(|mut a| {
+                                let mut values = vec![];
+                                for (component_id, type_id) in component_infos.iter() {
+                                    let mut x = a.get_mut_by_id(*component_id).unwrap();
+                                    let app_registry = app_registry.read();
+                                    let reflect_data = app_registry.get(*type_id).unwrap();
+                                    let reflect_from_ptr =
+                                        reflect_data.data::<ReflectFromPtr>().unwrap();
+                                    let value =
+                                        unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
+                                    values.push(ReflectPtr::new(
+                                        value,
+                                        ptr_state2.clone(),
+                                        ofr1.clone(),
+                                    ));
+                                }
+                                values
+                            })
+                            .collect::<Vec<_>>();
+                        let iterator_state = ctx.stash(UserData::new_static(
+                            &ctx,
+                            Mutex::new(IteratorState {
+                                components: items,
+                                ptr_state: ptr_state.clone(),
+                            }),
+                        ));
+                        ptr_states.push(ptr_state);
+                        let t = Table::new(&ctx);
+                        t.set(
+                            ctx,
+                            "iter",
+                            Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
+                                let iterator_state = ctx.fetch(&iterator_state).into_value(ctx);
+                                *iterator_state
+                                    .as_static_user_data::<Mutex<IteratorState>>()
+                                    .unwrap()
+                                    .lock()
+                                    .unwrap()
+                                    .ptr_state
+                                    .borrow_mut() = PtrState::Valid;
+                                stack.replace(
+                                    ctx,
+                                    (IteratorState::iterator_fn(&ctx), iterator_state),
+                                );
 
-                            Ok(CallbackReturn::Return)
-                        }),
-                    )
-                    .unwrap();
-                    things.push(t);
-                }
-                Ok(ctx.stash(Executor::start(ctx, func, Variadic(things))))
-            })
-            .unwrap();
-        lua.execute::<()>(&exec).unwrap();
-        for ptr_state in ptr_states.iter() {
-            *ptr_state.borrow_mut() = PtrState::Invalid;
+                                Ok(CallbackReturn::Return)
+                            }),
+                        )
+                        .unwrap();
+                        things.push(t);
+                    }
+                    Ok(ctx.stash(Executor::start(ctx, func, Variadic(things))))
+                })
+                .unwrap();
+            lua.execute::<()>(&exec).unwrap();
+            for ptr_state in ptr_states.iter() {
+                *ptr_state.borrow_mut() = PtrState::Invalid;
+            }
         }
     }
 
-    world.insert_non_send_resource(lua_systems);
+    world.insert_resource(lua_scripts);
     world.insert_non_send_resource(lua);
 }
 

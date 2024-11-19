@@ -8,7 +8,7 @@ description = "bevy lua integration for doing systems in lua"
 repository = "https://github.com/MalekiRe/blua"
 
 [dependencies]
-bevy = { version = "0.15.0-rc.3", features = ["reflect_functions"] }
+bevy = { version = "0.15.0-rc.3", features = ["reflect_functions", "file_watcher"] }
 piccolo = "0.3.3"
 flume = "0.11.1"
 send_wrapper = "0.6.0"

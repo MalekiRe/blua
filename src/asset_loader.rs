@@ -1,8 +1,10 @@
+use crate::reflect_stuff::LuaSystem;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoader, AssetPath, LoadContext, UntypedAssetId, VisitAssetDependencies};
 use bevy::prelude::*;
 use bevy::utils::ConditionalSendFuture;
 use flume::{Receiver, Sender};
+use send_wrapper::SendWrapper;
 
 pub struct LuaAssetLoader {
     pub lua_script_rx: Receiver<LuaScript>,
@@ -33,7 +35,9 @@ impl AssetLoader for LuaAssetLoader {
 }
 
 #[derive(TypePath)]
-pub struct LuaScript {/*pub exec: SendWrapper<StashedFunction>,*/}
+pub struct LuaScript {
+    pub systems: SendWrapper<Vec<LuaSystem>>,
+}
 
 impl VisitAssetDependencies for LuaScript {
     fn visit_dependencies(&self, _visit: &mut impl FnMut(UntypedAssetId)) {}
