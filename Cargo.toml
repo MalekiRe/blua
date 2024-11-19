@@ -1,6 +1,6 @@
 [package]
 name = "blua"
-version = "0.0.1-rc2"
+version = "0.0.1-rc3"
 edition = "2021"
 authors = ["Malek"]
 license = "MIT OR Apache-2.0"
@@ -8,7 +8,7 @@ description = "bevy lua integration for doing systems in lua"
 repository = "https://github.com/MalekiRe/blua"
 
 [dependencies]
-bevy = "0.15.0-rc.2"
+bevy = { version = "0.15.0-rc.3", features = ["reflect_functions"] }
 piccolo = "0.3.3"
 flume = "0.11.1"
 send_wrapper = "0.6.0"

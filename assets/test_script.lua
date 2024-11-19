@@ -23,11 +23,14 @@ end
 
 function third(q1, q2)
     for t in q1:iter() do
-        print(t.translation.z)
+        --print(t.translation.z)
     end
 
     for s in q2:iter() do
-        print(s.x)
+        --print(s.x)
+        print(s:get_sum())
+        print("and sum with is")
+        print(s:get_sum_with(4200.0))
     end
 end
 
@@ -45,8 +48,8 @@ function try_do_bad(q)
     end
 end
 
-app:register_system(my_system, { {bevy_transform.components.transform.Transform.mut} })
-app:register_system(second_system, { {bevy_transform.components.transform.Transform.mut, simple_test.Stretch.mut} })
+--app:register_system(my_system, { {bevy_transform.components.transform.Transform.mut} })
+--app:register_system(second_system, { {bevy_transform.components.transform.Transform.mut, simple_test.Stretch.mut} })
 app:register_system(third, { {bevy_transform.components.transform.Transform.mut}, {simple_test.Stretch.mut} })
 --app:register_system(try_do_bad, { {bevy_transform.components.transform.Transform.mut} })
 print("hello world!")

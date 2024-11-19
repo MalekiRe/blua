@@ -3,13 +3,17 @@ mod reflect_stuff;
 pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
-use crate::reflect_stuff::{LuaSystems, PtrState, ReflectPlugin, ReflectPtr, WorldMut};
+use crate::reflect_stuff::{
+    LuaSystems, ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, WorldMut,
+};
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
 use bevy::prelude::*;
+use bevy::reflect::func::{DynamicFunction, FunctionRegistry};
 use bevy::reflect::ReflectFromPtr;
 use piccolo::{
     Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Variadic,
 };
+use std::any::TypeId;
 use std::cell::RefCell;
 use std::io::Cursor;
 use std::ops::DerefMut;
@@ -26,6 +30,30 @@ impl Plugin for LuaPlugin {
         app.add_systems(Startup, insert_lua_vm);
         app.add_systems(Update, lua_asset_handling);
         app.add_systems(Update, run_every_tick);
+    }
+}
+
+pub trait AppExtensionFunctionRegisterTrait {
+    fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>);
+}
+impl AppExtensionFunctionRegisterTrait for App {
+    fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>) {
+        self.init_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>();
+        let mut object_function_registry = self
+            .world_mut()
+            .get_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>()
+            .unwrap();
+        if !object_function_registry
+            .borrow()
+            .contains_key(&TypeId::of::<T>())
+        {
+            object_function_registry
+                .borrow_mut()
+                .insert(TypeId::of::<T>(), FunctionRegistry::default());
+        }
+        let mut awa = object_function_registry.borrow_mut();
+        let function_registry = awa.get_mut(&TypeId::of::<T>()).unwrap();
+        function_registry.register(function).unwrap();
     }
 }
 
@@ -95,9 +123,14 @@ pub fn run_every_tick(world: &mut World) {
 
     let mut lua_systems = world.remove_non_send_resource::<LuaSystems>().unwrap();
     let app_registry = world.get_resource::<AppTypeRegistry>().unwrap().clone();
+    let object_function_registry = world
+        .get_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>()
+        .unwrap()
+        .clone();
     for awa in lua_systems.iter_mut() {
         let stashed_function = &awa.lua_func;
         let mut ptr_states = vec![];
+        let ofr1 = object_function_registry.clone();
         let (exec) = lua
             .try_enter(|ctx| {
                 let func = ctx.fetch(stashed_function);
@@ -117,7 +150,11 @@ pub fn run_every_tick(world: &mut World) {
                                 let reflect_from_ptr =
                                     reflect_data.data::<ReflectFromPtr>().unwrap();
                                 let value = unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
-                                values.push(ReflectPtr::new(value, ptr_state2.clone()));
+                                values.push(ReflectPtr::new(
+                                    value,
+                                    ptr_state2.clone(),
+                                    ofr1.clone(),
+                                ));
                             }
                             values
                         })

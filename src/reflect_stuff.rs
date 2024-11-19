@@ -1,15 +1,19 @@
 use crate::userdata_stuff::UserDataPtr;
 use crate::LuaVm;
 use bevy::ecs::component::ComponentId;
+use bevy::ecs::prelude::AppFunctionRegistry;
 use bevy::ecs::world::FilteredEntityMut;
 use bevy::prelude::*;
+use bevy::reflect::func::{ArgList, FunctionRegistry, Return};
 use piccolo::{
     Callback, CallbackReturn, Context, FromValue, Function, IntoValue, StashedFunction, Table,
-    TypeError, UserData, Value,
+    TypeError, UserData, Value, Variadic,
 };
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug)]
 pub enum ComponentType {
@@ -34,6 +38,12 @@ pub struct ReflectPtr {
     data: *mut dyn Reflect,
     path: String,
     ptr_state: Rc<RefCell<PtrState>>,
+    function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+}
+
+#[derive(Default, Deref, DerefMut)]
+pub struct ObjectFunctionRegistry {
+    map: HashMap<TypeId, FunctionRegistry>,
 }
 
 #[derive(PartialEq, Debug)]
@@ -43,11 +53,16 @@ pub enum PtrState {
 }
 
 impl ReflectPtr {
-    pub fn new(reflect: &mut dyn Reflect, ptr_state: Rc<RefCell<PtrState>>) -> Self {
+    pub fn new(
+        reflect: &mut dyn Reflect,
+        ptr_state: Rc<RefCell<PtrState>>,
+        function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+    ) -> Self {
         Self {
             data: reflect as *mut dyn Reflect,
             path: "".to_string(),
             ptr_state,
+            function_registry,
         }
     }
     pub fn get_field_value_ref(&self) -> &dyn Reflect {
@@ -110,6 +125,104 @@ impl UserDataPtr for ReflectPtr {
     // TODO safe mutability by seperating mut vs ref pointers
     fn lua_index<'gc>(&self, ctx: &Context<'gc>, key: &str) -> Value<'gc> {
         let mut reflect_ptr = self.clone();
+        if let Some(function_registry) = self
+            .function_registry
+            .borrow()
+            .get(&self.get_field_value_ref().reflect_type_info().type_id())
+        {
+            if let Some(function) = function_registry.get(key) {
+                let ptr_state = self.ptr_state.clone();
+                let function_registry = self.function_registry.clone();
+                let f = function.clone();
+                let function = Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
+                    let mut args_list = ArgList::new();
+                    use bevy::prelude::Function;
+                    let args_uwu: Variadic<Vec<Value>> = stack.consume(ctx)?;
+                    for v in args_uwu {
+                        match v {
+                            Value::Nil => {
+                                todo!()
+                            }
+                            Value::Boolean(bool) => {
+                                args_list = args_list.push_owned(bool);
+                            }
+                            Value::Integer(int) => {
+                                args_list = args_list.push_owned(int);
+                            }
+                            Value::Number(float) => {
+                                args_list = args_list.push_owned(float);
+                            }
+                            Value::String(_) => {
+                                todo!()
+                            }
+                            Value::Table(_) => {
+                                todo!()
+                            }
+                            Value::Function(_) => {
+                                todo!()
+                            }
+                            Value::Thread(_) => {
+                                todo!()
+                            }
+                            Value::UserData(user_data) => {
+                                if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
+                                    args_list = args_list.push_ref(
+                                        reflect.get_field_value_ref().as_partial_reflect(),
+                                    );
+                                } else {
+                                    todo!()
+                                }
+                            }
+                        }
+                    }
+                    let ret = f.call(args_list).unwrap();
+                    match ret {
+                        Return::Owned(mut owned) => {
+                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f32>()
+                            {
+                                stack.push_front(Value::Number(*awa as f64))
+                            }
+                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f64>()
+                            {
+                                stack.push_front(Value::Number(*awa))
+                            }
+
+                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i32>()
+                            {
+                                stack.push_front(Value::Integer(*awa as i64))
+                            }
+                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i64>()
+                            {
+                                stack.push_front(Value::Integer(*awa))
+                            }
+
+                            //TODO don't actually leak here figure out some resource tracking or something
+                            // probably use the builtin garbage collector?
+                            let owned = Box::leak(owned);
+
+                            let reflect = owned.try_as_reflect_mut().unwrap();
+
+                            let reflect_ptr = ReflectPtr::new(
+                                reflect,
+                                ptr_state.clone(),
+                                function_registry.clone(),
+                            );
+                            stack.push_front(reflect_ptr.into_value(&ctx));
+                        }
+                        Return::Ref(_) => {
+                            todo!()
+                        }
+                        Return::Mut(_) => {
+                            todo!()
+                        }
+                    }
+                    Ok(CallbackReturn::Return)
+                })
+                .into_value(*ctx);
+                return function;
+            }
+        }
+        // this is the case where it's not in the function registry
         reflect_ptr.path.push('.');
         reflect_ptr.path.push_str(key);
         reflect_ptr.into_value(ctx)
@@ -166,6 +279,7 @@ impl Clone for ReflectPtr {
             data: self.data,
             path: self.path.clone(),
             ptr_state: self.ptr_state.clone(),
+            function_registry: self.function_registry.clone(),
         }
     }
 }
