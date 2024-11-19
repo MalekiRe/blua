@@ -1,4 +1,5 @@
 pub mod asset_loader;
+mod bevy_wrapper;
 mod reflect_stuff;
 pub mod userdata_stuff;
 
@@ -33,7 +34,8 @@ impl Plugin for LuaPlugin {
     }
 }
 
-/*struct LuaScript(Handle<Lua>)*/
+#[derive(Component)]
+pub struct BluaScript(pub Handle<LuaScript>);
 
 pub trait AppExtensionFunctionRegisterTrait {
     fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>);
@@ -140,6 +142,7 @@ pub fn run_every_tick(world: &mut World) {
     let mut lua_scripts = world.remove_resource::<Assets<LuaScript>>().unwrap();
 
     let app_registry = world.get_resource::<AppTypeRegistry>().unwrap().clone();
+    world.init_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>();
     let object_function_registry = world
         .get_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>()
         .unwrap()
@@ -161,6 +164,7 @@ pub fn run_every_tick(world: &mut World) {
                             .into_iter()
                             .map(|mut a| {
                                 let mut values = vec![];
+                                //a.components();
                                 for (component_id, type_id) in component_infos.iter() {
                                     let mut x = a.get_mut_by_id(*component_id).unwrap();
                                     let app_registry = app_registry.read();
@@ -213,7 +217,9 @@ pub fn run_every_tick(world: &mut World) {
                     Ok(ctx.stash(Executor::start(ctx, func, Variadic(things))))
                 })
                 .unwrap();
-            lua.execute::<()>(&exec).unwrap();
+            if let Err(err) = lua.execute::<()>(&exec) {
+                println!("error running lua script didn't work: {err}");
+            }
             for ptr_state in ptr_states.iter() {
                 *ptr_state.borrow_mut() = PtrState::Invalid;
             }

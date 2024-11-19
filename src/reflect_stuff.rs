@@ -234,7 +234,9 @@ impl UserDataPtr for ReflectPtr {
             }
             Value::Integer(i) => {
                 let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
-                reflect_field.set(Box::new(i as i32)).unwrap();
+                if let Err(awa) = reflect_field.set(Box::new(i as i32)) {
+                    println!("error setting value: {:?}", awa);
+                }
             }
             Value::Boolean(b) => {
                 let mut reflect_field: &mut dyn Reflect = reflect_ptr.get_field_value_mut();
@@ -375,15 +377,18 @@ impl WorldMut {
                     match component_type {
                         ComponentType::Ref((component_id, type_id)) => {
                             query_builder.ref_id(component_id);
+                            query_builder.with_id(component_id);
                             components.push((component_id, type_id));
                         }
                         ComponentType::Mut((component_id, type_id)) => {
                             query_builder.mut_id(component_id);
+                            query_builder.with_id(component_id);
                             components.push((component_id, type_id));
                         }
                     }
                 }
                 let query_state = query_builder.build();
+                println!("components is: {:#?}", components);
                 queries.push((query_state, components));
             }
 
