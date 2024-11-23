@@ -14,9 +14,15 @@ use bevy::ecs::system::SystemBuffer;
 use bevy::ecs::world::CommandQueue;
 use bevy::prelude::*;
 use bevy::ptr::OwningPtr;
-use bevy::reflect::func::{ArgList, ArgValue, DynamicFunction, FunctionError, FunctionInfo, FunctionRegistry, IntoReturn, ReflectFn, Return, TypedFunction};
+use bevy::reflect::func::{
+    ArgList, ArgValue, DynamicFunction, FunctionError, FunctionInfo, FunctionRegistry, IntoReturn,
+    ReflectFn, Return, TypedFunction,
+};
 use bevy::reflect::{impl_reflect, ReflectFromPtr, Typed};
-use piccolo::{Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, TypeError, UserData, Value, Variadic};
+use piccolo::{
+    Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, TypeError,
+    UserData, Value, Variadic,
+};
 use send_wrapper::SendWrapper;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -32,12 +38,14 @@ pub struct LuaPlugin;
 #[derive(Reflect)]
 pub struct TableReflectWrapper {
     #[reflect(ignore)]
-    table: Option<SendWrapper<Table<'static>>>
+    table: Option<SendWrapper<Table<'static>>>,
 }
 
 impl TableReflectWrapper {
     pub unsafe fn new(table: Table) -> TableReflectWrapper {
-        Self { table: Some(SendWrapper::new( std::mem::transmute(table) )) }
+        Self {
+            table: Some(SendWrapper::new(std::mem::transmute(table))),
+        }
     }
     pub unsafe fn take(self) -> Table<'static> {
         self.table.unwrap().take()
@@ -168,7 +176,8 @@ impl AppExtensionFunctionRegisterTrait for App {
                                         todo!()
                                     }
                                     Value::Table(table) => {
-                                        args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
+                                        args_list = args_list
+                                            .push_owned(unsafe { TableReflectWrapper::new(table) });
                                     }
                                     Value::Function(_) => {
                                         todo!()
@@ -478,7 +487,7 @@ pub struct CommandQueueWrapper {
     #[reflect(ignore)]
     pub commands: CommandQueue,
 }
-pub fn spawn<'a>(this: &'a mut CommandQueueWrapper, table: TableReflectWrapper) {
+pub fn spawn(this: &mut CommandQueueWrapper, table: TableReflectWrapper) {
     this.push(move |world: &mut World| {
         let table = table.table.unwrap().take();
         for (_key, value) in table {
@@ -486,7 +495,10 @@ pub fn spawn<'a>(this: &'a mut CommandQueueWrapper, table: TableReflectWrapper) 
                 println!("passed non reflect to spawn function");
                 continue;
             };
-            let type_id = unsafe {&mut *value.get_data()}.get_represented_type_info().unwrap().type_id();
+            let type_id = unsafe { &mut *value.get_data() }
+                .get_represented_type_info()
+                .unwrap()
+                .type_id();
             match &value.data {
                 ReflectType::Ptr(_) => {}
                 ReflectType::Boxed(boxed) => {

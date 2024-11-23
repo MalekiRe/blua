@@ -223,7 +223,8 @@ impl UserDataPtr for ReflectPtr {
                                 todo!()
                             }
                             Value::Table(table) => {
-                                args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
+                                args_list = args_list
+                                    .push_owned(unsafe { TableReflectWrapper::new(table) });
                             }
                             Value::Function(_) => {
                                 todo!()
