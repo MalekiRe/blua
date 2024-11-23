@@ -371,7 +371,7 @@ pub fn run_every_tick(world: &mut World) {
         .clone();
     for (_, awa) in lua_scripts.iter_mut() {
         let mut command_queue = CommandQueueWrapper {
-            world: Some(SendWrapper::new(world as *mut World)),
+            commands: Default::default(),
         };
         for awa in awa.systems.iter_mut() {
             let stashed_function = &awa.lua_func;
@@ -465,7 +465,7 @@ pub fn run_every_tick(world: &mut World) {
             for ptr_state in ptr_states.iter() {
                 *ptr_state.borrow_mut() = PtrState::Invalid;
             }
-            //command_queue.command_queue.apply(world);
+            command_queue.commands.apply(world);
         }
     }
 
@@ -473,42 +473,42 @@ pub fn run_every_tick(world: &mut World) {
     world.insert_non_send_resource(lua);
 }
 
-#[derive(Reflect)]
+#[derive(Reflect, Deref, DerefMut)]
 pub struct CommandQueueWrapper {
     #[reflect(ignore)]
-    pub world: Option<SendWrapper<*mut World>>,
+    pub commands: CommandQueue,
 }
-pub fn spawn<'a>(this: &'a mut CommandQueueWrapper, table: TableReflectWrapper) -> &'a mut CommandQueueWrapper {
-    let table = table.table.unwrap().take();
-    let world = unsafe { this.world.as_mut().unwrap().as_mut().unwrap() };
-    for (_key, value) in table {
-        let Ok(value) = value.as_static_user_data::<ReflectPtr>() else {
-            println!("passed non reflect to spawn function");
-            continue;
-        };
-        let type_id = unsafe {&mut *value.get_data()}.get_represented_type_info().unwrap().type_id();
-        match &value.data {
-            ReflectType::Ptr(_) => {}
-            ReflectType::Boxed(boxed) => {
-                let thing_to_add = boxed.borrow_mut().take().unwrap();
-                let t = &Transform {
-                    translation: Default::default(),
-                    rotation: Default::default(),
-                    scale: Default::default(),
-                };
-                let component_id: ComponentId = world.components().get_id(type_id).unwrap();
-                let mut e: EntityWorldMut = world.spawn_empty();
-                let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
-                unsafe {
-                    e.insert_by_id(
-                        component_id,
-                        OwningPtr::new(NonNull::new(data_ptr).unwrap()),
-                    )
-                };
+pub fn spawn<'a>(this: &'a mut CommandQueueWrapper, table: TableReflectWrapper) {
+    this.push(move |world: &mut World| {
+        let table = table.table.unwrap().take();
+        for (_key, value) in table {
+            let Ok(value) = value.as_static_user_data::<ReflectPtr>() else {
+                println!("passed non reflect to spawn function");
+                continue;
+            };
+            let type_id = unsafe {&mut *value.get_data()}.get_represented_type_info().unwrap().type_id();
+            match &value.data {
+                ReflectType::Ptr(_) => {}
+                ReflectType::Boxed(boxed) => {
+                    let thing_to_add = boxed.borrow_mut().take().unwrap();
+                    let t = &Transform {
+                        translation: Default::default(),
+                        rotation: Default::default(),
+                        scale: Default::default(),
+                    };
+                    let component_id: ComponentId = world.components().get_id(type_id).unwrap();
+                    let mut e: EntityWorldMut = world.spawn_empty();
+                    let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
+                    unsafe {
+                        e.insert_by_id(
+                            component_id,
+                            OwningPtr::new(NonNull::new(data_ptr).unwrap()),
+                        )
+                    };
+                }
             }
         }
-    }
-    this
+    });
 }
 
 #[derive(Deref, DerefMut)]
