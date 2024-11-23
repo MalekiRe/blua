@@ -1,4 +1,4 @@
-use piccolo::{Callback, CallbackReturn, Context, FromValue, Table, TypeError, UserData, Value};
+use piccolo::{Callback, CallbackReturn, Context, FromValue, IntoValue, Table, TypeError, UserData, Value};
 
 pub trait UserDataPtr: Sized + 'static
 where
@@ -38,8 +38,8 @@ where
                 "__index",
                 Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
                     let (this, key): (&Self, Value) = stack.consume(ctx)?;
-                    let s = key.to_string();
-                    stack.push_front(this.lua_index(&ctx, &s));
+                    let s = key.into_string(ctx).unwrap().to_str().unwrap();
+                    stack.push_front(this.lua_index(&ctx, s));
 
                     Ok(CallbackReturn::Return)
                 }),
@@ -52,8 +52,8 @@ where
                 "__newindex",
                 Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
                     let (this, key, new_value): (&Self, Value, Value) = stack.consume(ctx)?;
-                    let s = key.to_string();
-                    this.lua_new_index(&ctx, &s, new_value);
+                    let s = key.into_string(ctx).unwrap().to_str().unwrap();
+                    this.lua_new_index(&ctx, s, new_value);
 
                     Ok(CallbackReturn::Return)
                 }),

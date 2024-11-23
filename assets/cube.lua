@@ -17,9 +17,10 @@ function my_system2(commands, query)
     for transform in query:iter() do
         awa = awa + 1
         print(transform)
+        transform.translation.x = transform.translation.x + 1.0
     end
     if (awa == 0) then
-        local _idc = commands:spawn({ bevy_transform.components.transform.Transform.default() })
+        commands:spawn({ bevy_transform.components.transform.Transform.default() })
     end
 end
 

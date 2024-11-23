@@ -102,7 +102,7 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
                     args_list = args_list.push_owned(float);
                 }
                 Value::String(lua_string) => {
-                    args_list = args_list.push_owned(lua_string.to_string())
+                    args_list = args_list.push_owned(lua_string.to_str().unwrap().to_string())
                 }
                 Value::Table(table) => {
                     args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
@@ -220,10 +220,10 @@ impl AppExtensionFunctionRegisterTrait for App {
                         let f = f.clone();
                         let function = lua_wrapped_dynamic_function_call(ctx, f, ofr1);
 
-                        let t = match lua_table.get(ctx, item) {
+                        let t = match lua_table.get(ctx, item).unwrap() {
                             Value::Nil => {
                                 lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
-                                match lua_table.get(ctx, item) {
+                                match lua_table.get(ctx, item).unwrap() {
                                     Value::Table(table) => table,
                                     _ => unreachable!(),
                                 }
@@ -234,10 +234,10 @@ impl AppExtensionFunctionRegisterTrait for App {
                         t.set(ctx, name, function).unwrap();
                         break;
                     }
-                    lua_table = match lua_table.get(ctx, item) {
+                    lua_table = match lua_table.get(ctx, item).unwrap() {
                         Value::Nil => {
                             lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
-                            match lua_table.get(ctx, item) {
+                            match lua_table.get(ctx, item).unwrap() {
                                 Value::Table(table) => table,
                                 _ => unreachable!(),
                             }
@@ -276,7 +276,7 @@ pub fn lua_asset_handling(world: &mut World) {
             let exec = lua
                 .try_enter(|ctx| {
                     let user_data = UserData::new_static(&ctx, systems_vec.clone());
-                    ctx.set_global("__systems_vec", user_data).unwrap();
+                    ctx.set_global("__systems_vec", user_data);
                     let lua_app_value = lua_app.clone().into_value(&ctx);
                     let closure = Closure::load(
                         ctx,
@@ -295,7 +295,7 @@ pub fn lua_asset_handling(world: &mut World) {
                 .unwrap();
         }
         lua.try_enter(|ctx| {
-            ctx.set_global("__systems_vec", Value::Nil).unwrap();
+            ctx.set_global("__systems_vec", Value::Nil);
             Ok(CallbackReturn::Return)
         })
         .unwrap();

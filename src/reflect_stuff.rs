@@ -339,7 +339,8 @@ impl WorldMut {
         Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
             let systems_vec = ctx
                 .globals()
-                .get(ctx, "__systems_vec")
+                .get::<_, Value>(ctx, "__systems_vec")
+                .unwrap()
                 .as_static_user_data::<Rc<RefCell<Option<Vec<LuaSystem>>>>>()?;
             let systems_vec = systems_vec.clone();
 
@@ -466,10 +467,10 @@ fn register_components_and_markers(world: &mut World) {
                 let len = things.len();
                 for (i, item) in things.into_iter().enumerate() {
                     if i + 1 == len {
-                        let t = match lua_table.get(ctx, item) {
+                        let t = match lua_table.get(ctx, item).unwrap() {
                             Value::Nil => {
                                 lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
-                                match lua_table.get(ctx, item) {
+                                match lua_table.get(ctx, item).unwrap() {
                                     Value::Table(table) => table,
                                     _ => unreachable!(),
                                 }
@@ -498,10 +499,10 @@ fn register_components_and_markers(world: &mut World) {
 
                         break;
                     }
-                    lua_table = match lua_table.get(ctx, item) {
+                    lua_table = match lua_table.get(ctx, item).unwrap() {
                         Value::Nil => {
                             lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
-                            match lua_table.get(ctx, item) {
+                            match lua_table.get(ctx, item).unwrap() {
                                 Value::Table(table) => table,
                                 _ => unreachable!(),
                             }
