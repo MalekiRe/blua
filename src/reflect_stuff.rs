@@ -1,14 +1,15 @@
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
-use crate::LuaVm;
-use bevy::ecs::component::ComponentId;
+use crate::{spawn, HashMapWrapper, LuaVm};
+use bevy::ecs::component::{ComponentDescriptor, ComponentId};
 use bevy::ecs::prelude::AppFunctionRegistry;
-use bevy::ecs::world::FilteredEntityMut;
+use bevy::ecs::world::{CommandQueue, FilteredEntityMut};
 use bevy::prelude::*;
 use bevy::reflect::func::{ArgList, FunctionRegistry, Return};
 use piccolo::{
     Callback, CallbackReturn, Context, FromValue, Function, IntoValue, StashedFunction, Table,
     TypeError, UserData, Value, Variadic,
 };
+use send_wrapper::SendWrapper;
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,19 +22,43 @@ pub enum ComponentType {
     Mut((ComponentId, TypeId)),
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct CommandQueueMarker;
+
 pub struct LuaSystem {
     pub lua_func: StashedFunction,
-    pub queries: Vec<(
-        QueryState<FilteredEntityMut<'static>>,
-        Vec<(ComponentId, TypeId)>,
-    )>,
+    pub system_parameters: Vec<SystemParameter>,
+}
+
+pub enum SystemParameter {
+    Query(
+        (
+            QueryState<FilteredEntityMut<'static>>,
+            Vec<(ComponentId, TypeId)>,
+        ),
+    ),
+    CommandQueue,
 }
 
 pub struct ReflectPtr {
-    data: *mut dyn Reflect,
+    pub data: ReflectType,
     path: String,
     ptr_state: Rc<RefCell<PtrState>>,
     function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+}
+
+pub enum ReflectType {
+    Ptr(*mut dyn Reflect),
+    Boxed(Rc<RefCell<Option<Box<dyn Reflect>>>>),
+}
+
+impl Clone for ReflectType {
+    fn clone(&self) -> Self {
+        match self {
+            ReflectType::Ptr(ptr) => ReflectType::Ptr(*ptr),
+            ReflectType::Boxed(boxed) => ReflectType::Boxed(boxed.clone()),
+        }
+    }
 }
 
 #[derive(Default, Deref, DerefMut)]
@@ -54,7 +79,19 @@ impl ReflectPtr {
         function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
     ) -> Self {
         Self {
-            data: reflect as *mut dyn Reflect,
+            data: ReflectType::Ptr(reflect as *mut dyn Reflect),
+            path: "".to_string(),
+            ptr_state,
+            function_registry,
+        }
+    }
+    pub fn new_boxed(
+        reflect: Box<dyn Reflect>,
+        ptr_state: Rc<RefCell<PtrState>>,
+        function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+    ) -> Self {
+        Self {
+            data: ReflectType::Boxed(Rc::new(RefCell::new(Some(reflect)))),
             path: "".to_string(),
             ptr_state,
             function_registry,
@@ -108,10 +145,45 @@ impl UserDataPtr for ReflectPtr {
     type Data = dyn Reflect;
 
     fn get_data(&self) -> *mut Self::Data {
-        self.data
+        match &self.data {
+            ReflectType::Ptr(ptr) => *ptr,
+            ReflectType::Boxed(boxed) => {
+                ((boxed.borrow_mut().as_mut().unwrap()).as_mut() as *mut dyn Reflect).clone()
+            }
+        }
     }
 
-    fn edit_metatable<'gc>(&self, _table: &mut Table<'gc>) {}
+    fn edit_metatable<'gc>(&self, ctx: &Context<'gc>, metatable: &mut Table<'gc>) {
+        metatable
+            .set(
+                *ctx,
+                "__add",
+                Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
+                    let (this, rhs): (&Self, Value) = stack.consume(ctx)?;
+                    match rhs {
+                        Value::Integer(integer) => {
+                            if let Some(awa) = this.get_field_value_ref().downcast_ref::<i32>() {
+                                stack.push_front(Value::Integer(*awa as i64 + integer))
+                            }
+                        }
+                        Value::Number(number) => {
+                            if let Some(awa) = this.get_field_value_ref().downcast_ref::<f32>() {
+                                stack.push_front(Value::Number(*awa as f64 + number))
+                            }
+                        }
+                        Value::UserData(_) => {
+                            todo!()
+                        }
+                        _ => {
+                            stack.push_front(Value::Nil);
+                            println!("tried to add something that can't be added")
+                        }
+                    }
+                    Ok(CallbackReturn::Return)
+                }),
+            )
+            .unwrap();
+    }
 
     fn lua_to_string(&self) -> String {
         format!("{:?}", self.get_field_value_ref())
@@ -150,8 +222,20 @@ impl UserDataPtr for ReflectPtr {
                             Value::String(_) => {
                                 todo!()
                             }
-                            Value::Table(_) => {
-                                todo!()
+                            Value::Table(table) => {
+                                let mut t = Vec::new();
+                                for (key, value) in table.iter() {
+                                    t.push(match value.as_static_user_data::<ReflectPtr>() {
+                                        Ok(awa) => awa.clone(),
+                                        Err(_) => todo!(),
+                                    });
+                                }
+                                let h = HashMapWrapper {
+                                    hashmap: Some(SendWrapper::new(
+                                        t
+                                    )),
+                                };
+                                args_list = args_list.push_owned(h);
                             }
                             Value::Function(_) => {
                                 todo!()
@@ -161,8 +245,8 @@ impl UserDataPtr for ReflectPtr {
                             }
                             Value::UserData(user_data) => {
                                 if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
-                                    args_list = args_list.push_ref(
-                                        reflect.get_field_value_ref().as_partial_reflect(),
+                                    args_list = args_list.push_mut(
+                                        reflect.get_field_value_mut().as_partial_reflect_mut(),
                                     );
                                 } else {
                                     todo!()
@@ -171,6 +255,7 @@ impl UserDataPtr for ReflectPtr {
                         }
                     }
                     let ret = f.call(args_list).unwrap();
+                    //println!("WAWAAAAAAA");
                     match ret {
                         Return::Owned(mut owned) => {
                             if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f32>()
@@ -191,14 +276,10 @@ impl UserDataPtr for ReflectPtr {
                                 stack.push_front(Value::Integer(*awa))
                             }
 
-                            //TODO don't actually leak here figure out some resource tracking or something
-                            // probably use the builtin garbage collector?
-                            let owned = Box::leak(owned);
+                            //println!("THE TYPE ID OF THIS IS: {:?}", owned.get_represented_type_info().unwrap().type_id());
 
-                            let reflect = owned.try_as_reflect_mut().unwrap();
-
-                            let reflect_ptr = ReflectPtr::new(
-                                reflect,
+                            let reflect_ptr = ReflectPtr::new_boxed(
+                                owned.try_into_reflect().unwrap(),
                                 ptr_state.clone(),
                                 function_registry.clone(),
                             );
@@ -273,7 +354,7 @@ impl UserDataPtr for ReflectPtr {
 impl Clone for ReflectPtr {
     fn clone(&self) -> Self {
         Self {
-            data: self.data,
+            data: self.data.clone(),
             path: self.path.clone(),
             ptr_state: self.ptr_state.clone(),
             function_registry: self.function_registry.clone(),
@@ -320,7 +401,7 @@ impl UserDataPtr for WorldMut {
         self.this.unwrap()
     }
 
-    fn edit_metatable<'gc>(&self, _table: &mut Table<'gc>) {}
+    fn edit_metatable<'gc>(&self, _ctx: &Context<'gc>, _table: &mut Table<'gc>) {}
 
     fn lua_to_string(&self) -> String {
         "app".to_string()
@@ -354,21 +435,35 @@ impl WorldMut {
                 .get(ctx, "__systems_vec")
                 .as_static_user_data::<Rc<RefCell<Option<Vec<LuaSystem>>>>>()?;
             let systems_vec = systems_vec.clone();
+
             let (this, system, system_params): (&WorldMut, Value, Table) = stack.consume(ctx)?;
 
             let function: Function = Function::from_value(ctx, system)?;
 
             let world = unsafe { &mut *this.get_data() };
 
-            let mut queries = vec![];
+            let mut system_parameters = vec![];
 
             for (_, system_parameter) in system_params.into_iter() {
-                let table = Table::from_value(ctx, system_parameter)?;
-                let mut query_builder = QueryBuilder::<FilteredEntityMut>::new(world);
+                //println!("hi");
+                // TODO add resources and other things here too
+                if system_parameter
+                    .as_static_user_data::<CommandQueueMarker>()
+                    .is_ok()
+                {
+                    system_parameters.push(SystemParameter::CommandQueue);
+                    //println!("hello");
+                    continue;
+                }
 
+                let table = Table::from_value(ctx, system_parameter)?;
+                //println!("UwU");
+                let mut query_builder = QueryBuilder::<FilteredEntityMut>::new(world);
+                //println!("UwU");
                 //TODO we might want to restrict this to something like mut vs ref components
                 let mut components = vec![];
                 for (_, component_type) in table.into_iter() {
+                    //println!("awa1");
                     let component_type = UserData::from_value(ctx, component_type)?;
                     let component_type = component_type
                         .downcast_static::<ComponentType>()
@@ -386,19 +481,20 @@ impl WorldMut {
                             components.push((component_id, type_id));
                         }
                     }
+                    //println!("awa2");
                 }
                 let query_state = query_builder.build();
-                println!("components is: {:#?}", components);
-                queries.push((query_state, components));
+                system_parameters.push(SystemParameter::Query((query_state, components)));
+                //println!("hello");
             }
-
+            //println!("UwU");
             let stashed_function = ctx.stash(function);
-
+            //println!("UwU");
             systems_vec.borrow_mut().as_mut().unwrap().push(LuaSystem {
                 lua_func: stashed_function,
-                queries,
+                system_parameters,
             });
-
+            //println!("UwU");
             Ok(CallbackReturn::Return)
         })
     }
@@ -408,17 +504,46 @@ pub struct ReflectPlugin;
 
 impl Plugin for ReflectPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostStartup, register_components);
+        app.add_systems(PostStartup, register_components_and_markers);
     }
 }
 
-fn register_components(world: &mut World) {
+fn register_components_and_markers(world: &mut World) {
     world.resource_scope(|world, registry: Mut<AppTypeRegistry>| {
         let mut lua = world.remove_non_send_resource::<LuaVm>().unwrap();
+        lua.try_enter(|ctx| {
+            ctx.globals()
+                .set(
+                    ctx,
+                    "Commands",
+                    UserData::new_static(&ctx, CommandQueueMarker).into_value(ctx),
+                )
+                .unwrap();
+            Ok(CallbackReturn::Return)
+        })
+        .unwrap();
+        for a in registry.read().iter() {
+            //println!("{}", a.type_info().type_path());
+        }
+        let ids = registry
+            .read()
+            .iter()
+            .map(|a| a.type_id())
+            .collect::<Vec<_>>();
+        let mut awa2: HashMap<TypeId, ComponentId> = HashMap::new();
+        for id in ids {
+            if let Some(awa) = registry.write().get_type_data::<ReflectComponent>(id) {
+                let c = awa.register_component(world);
+                awa2.insert(id, c);
+            }
+        }
+        world.insert_non_send_resource(awa2);
         for item in registry.read().iter() {
-            let Some(component_id) = world.components().get_id(item.type_id()) else {
-                continue;
+            let component_id = match world.components().get_id(item.type_id()) {
+                None => continue,
+                Some(component_id) => component_id,
             };
+
             let type_id = item.type_id();
             let things = item
                 .type_info()
@@ -434,7 +559,22 @@ fn register_components(world: &mut World) {
                 let len = things.len();
                 for (i, item) in things.into_iter().enumerate() {
                     if i + 1 == len {
-                        let t = Table::new(&ctx);
+                        let t = match lua_table.get(ctx, item) {
+                            Value::Nil => {
+                                lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
+                                match lua_table.get(ctx, item) {
+                                    Value::Table(table) => table,
+                                    _ => unreachable!(),
+                                }
+                            }
+                            Value::Table(table) => table,
+                            _ => panic!("awa"),
+                        };
+
+                        if item == "Transform" {
+                            //println!("THIS ONE WAS TRANSOFMR");
+                            //println!("type id of the transfomr is: {:?}", type_id);
+                        }
 
                         t.set(
                             ctx,
@@ -449,7 +589,6 @@ fn register_components(world: &mut World) {
                         )
                         .unwrap();
 
-                        lua_table.set(ctx, item, t).unwrap();
                         break;
                     }
                     lua_table = match lua_table.get(ctx, item) {

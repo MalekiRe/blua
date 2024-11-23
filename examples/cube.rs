@@ -1,3 +1,4 @@
+use std::any::{Any, TypeId};
 use bevy::app::App;
 use bevy::asset::{AssetServer, Handle};
 use bevy::prelude::ReflectComponent;
@@ -6,7 +7,12 @@ use bevy::prelude::{Commands, Component, Reflect, Res, Startup, Transform, Vec3}
 use bevy::DefaultPlugins;
 use blua::asset_loader::LuaScript;
 use blua::{AppExtensionFunctionRegisterTrait, BluaScript, LuaPlugin};
+use std::ops::Add;
+use bevy::reflect::func::{ArgList, Return};
+
 fn main() {
+
+
     let mut app = App::default();
     app.add_plugins(DefaultPlugins.set(AssetPlugin {
         watch_for_changes_override: Some(true),
@@ -14,8 +20,21 @@ fn main() {
     }))
     .add_plugins(LuaPlugin);
     app.register_type::<CubeMarker>();
+    app.register_object_function::<Vec3>(add.into_function().with_name("add"));
+    app.register_non_self_object_function::<Transform>(
+        default_uwu.into_function().with_name("default"),
+    );
+    app.register_type::<Transform>();
     app.add_systems(Startup, setup);
     app.run();
+}
+
+fn add(a: &Vec3, b: &Vec3) -> Vec3 {
+    a + b
+}
+
+fn default_uwu() -> Transform {
+    Transform::default()
 }
 
 #[derive(Component, Reflect)]
@@ -30,7 +49,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.spawn((
+    /* commands.spawn((
         Mesh3d(meshes.add(Circle::new(4.0))),
         MeshMaterial3d(materials.add(Color::WHITE)),
         Transform::from_rotation(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2)),
@@ -56,7 +75,7 @@ fn setup(
     commands.spawn((
         Camera3d::default(),
         Transform::from_xyz(-2.5, 4.5, 9.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
+    ));*/
 
     commands.spawn(BluaScript(asset_server.load("cube.lua")));
 }

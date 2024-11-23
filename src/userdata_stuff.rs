@@ -60,12 +60,12 @@ where
             )
             .unwrap();
 
-        self.edit_metatable(&mut metatable);
+        self.edit_metatable(ctx, &mut metatable);
 
         metatable
     }
 
-    fn edit_metatable<'gc>(&self, table: &mut Table<'gc>);
+    fn edit_metatable<'gc>(&self, ctx: &Context<'gc>, table: &mut Table<'gc>);
 
     fn lua_to_string(&self) -> String;
 

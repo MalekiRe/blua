@@ -4,20 +4,26 @@ mod reflect_stuff;
 pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
-use crate::reflect_stuff::{ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, WorldMut};
-use crate::userdata_stuff::{UserDataPtr, ValueExt};
-use bevy::prelude::*;
-use bevy::reflect::func::{DynamicFunction, FunctionRegistry};
-use bevy::reflect::ReflectFromPtr;
-use piccolo::{
-    Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, UserData, Value,
-    Variadic,
+use crate::reflect_stuff::{
+    ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, ReflectType, SystemParameter,
+    WorldMut,
 };
+use crate::userdata_stuff::{UserDataPtr, ValueExt};
+use bevy::ecs::component::ComponentId;
+use bevy::ecs::system::SystemBuffer;
+use bevy::ecs::world::CommandQueue;
+use bevy::prelude::*;
+use bevy::ptr::OwningPtr;
+use bevy::reflect::func::{ArgList, DynamicFunction, FunctionRegistry, Return};
+use bevy::reflect::{ReflectFromPtr, Typed};
+use piccolo::{Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, TypeError, UserData, Value, Variadic};
 use send_wrapper::SendWrapper;
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::ops::DerefMut;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Mutex;
 
@@ -31,6 +37,9 @@ impl Plugin for LuaPlugin {
         app.add_systems(Startup, insert_lua_vm);
         app.add_systems(Update, lua_asset_handling);
         app.add_systems(Update, run_every_tick);
+        app.register_object_function::<CommandQueueWrapper>(
+            spawn.into_function().with_name("spawn"),
+        );
     }
 }
 
@@ -39,6 +48,10 @@ pub struct BluaScript(pub Handle<LuaScript>);
 
 pub trait AppExtensionFunctionRegisterTrait {
     fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>);
+    fn register_non_self_object_function<T: Reflect + Typed>(
+        &mut self,
+        function: DynamicFunction<'static>,
+    );
 }
 impl AppExtensionFunctionRegisterTrait for App {
     fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>) {
@@ -59,10 +72,202 @@ impl AppExtensionFunctionRegisterTrait for App {
         let function_registry = awa.get_mut(&TypeId::of::<T>()).unwrap();
         function_registry.register(function).unwrap();
     }
+    fn register_non_self_object_function<T: Reflect + Typed>(
+        &mut self,
+        function: DynamicFunction<'static>,
+    ) {
+        self.init_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>();
+        let mut object_function_registry = self
+            .world_mut()
+            .get_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>()
+            .unwrap()
+            .clone();
+        let mut ofr1 = object_function_registry.clone();
+        if !object_function_registry
+            .borrow()
+            .contains_key(&TypeId::of::<T>())
+        {
+            object_function_registry
+                .borrow_mut()
+                .insert(TypeId::of::<T>(), FunctionRegistry::default());
+        }
+        let mut awa = object_function_registry.borrow_mut();
+        let function_registry = awa.get_mut(&TypeId::of::<T>()).unwrap();
+        function_registry.register(function.clone()).unwrap();
+
+        let world = self.world_mut();
+
+        let type_id = TypeId::of::<T>();
+        let things = T::type_info()
+            .type_path()
+            .split("::")
+            .collect::<Vec<&str>>();
+
+        // uncomment this if you wanna see the path of all the things aviable to you
+        //println!("{:?}", things);
+        world.init_non_send_resource::<LuaVm>();
+        let mut lua = world.get_non_send_resource_mut::<LuaVm>().unwrap();
+        lua.lua
+            .try_enter(move |ctx| {
+                let mut lua_table = ctx.globals();
+                let len = things.len();
+                let f = function.clone();
+                for (i, item) in things.into_iter().enumerate() {
+                    if i + 1 == len {
+                        let name = function.name().unwrap().to_string();
+
+                        let f = f.clone();
+                        let function = Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
+                            let mut args_list = ArgList::new();
+                            use bevy::prelude::Function;
+                            let args_uwu: Variadic<Vec<Value>> = stack.consume(ctx)?;
+                            for v in args_uwu {
+                                match v {
+                                    Value::Nil => {
+                                        todo!()
+                                    }
+                                    Value::Boolean(bool) => {
+                                        args_list = args_list.push_owned(bool);
+                                    }
+                                    Value::Integer(int) => {
+                                        args_list = args_list.push_owned(int);
+                                    }
+                                    Value::Number(float) => {
+                                        args_list = args_list.push_owned(float);
+                                    }
+                                    Value::String(_) => {
+                                        todo!()
+                                    }
+                                    Value::Table(table) => {
+                                        let mut t = Vec::new();
+                                        for (key, value) in table.iter() {
+                                            t.push(match value.as_static_user_data::<ReflectPtr>() {
+                                                Ok(awa) => awa.clone(),
+                                                Err(_) => todo!(),
+                                            });
+                                        }
+                                        let h = HashMapWrapper {
+                                            hashmap: Some(SendWrapper::new(
+                                                t
+                                            )),
+                                        };
+                                        args_list = args_list.push_owned(h);
+                                    }
+                                    Value::Function(_) => {
+                                        todo!()
+                                    }
+                                    Value::Thread(_) => {
+                                        todo!()
+                                    }
+                                    Value::UserData(user_data) => {
+                                        if let Ok(reflect) =
+                                            user_data.downcast_static::<ReflectPtr>()
+                                        {
+                                            args_list = args_list.push_ref(
+                                                reflect.get_field_value_ref().as_partial_reflect(),
+                                            );
+                                        } else {
+                                            todo!()
+                                        }
+                                    }
+                                }
+                            }
+                            //println!("args list: {:#?}", args_list);
+                            let ret = f.call(args_list).unwrap();
+                            match ret {
+                                Return::Owned(mut owned) => {
+                                    if let Some(awa) =
+                                        owned.try_as_reflect().unwrap().downcast_ref::<f32>()
+                                    {
+                                        stack.push_front(Value::Number(*awa as f64))
+                                    }
+                                    if let Some(awa) =
+                                        owned.try_as_reflect().unwrap().downcast_ref::<f64>()
+                                    {
+                                        stack.push_front(Value::Number(*awa))
+                                    }
+
+                                    if let Some(awa) =
+                                        owned.try_as_reflect().unwrap().downcast_ref::<i32>()
+                                    {
+                                        stack.push_front(Value::Integer(*awa as i64))
+                                    }
+                                    if let Some(awa) =
+                                        owned.try_as_reflect().unwrap().downcast_ref::<i64>()
+                                    {
+                                        stack.push_front(Value::Integer(*awa))
+                                    }
+
+                                    //println!("type id from reflected funciton is {:?}", owned.get_represented_type_info().unwrap().type_id());
+
+                                    let owned = owned.try_into_reflect().unwrap();
+                                    //println!("after conversion: {:?}", owned.get_represented_type_info().unwrap().type_id());
+
+                                    let reflect_ptr = ReflectPtr::new_boxed(
+                                        owned,
+                                        Rc::new(RefCell::new(PtrState::Valid)),
+                                        ofr1.clone(),
+                                    );
+                                    stack.push_front(reflect_ptr.into_value(&ctx));
+                                }
+                                Return::Ref(_) => {
+                                    todo!()
+                                }
+                                Return::Mut(_) => {
+                                    todo!()
+                                }
+                            }
+                            Ok(CallbackReturn::Return)
+                        })
+                        .into_value(ctx);
+
+                        let t = match lua_table.get(ctx, item) {
+                            Value::Nil => {
+                                lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
+                                match lua_table.get(ctx, item) {
+                                    Value::Table(table) => table,
+                                    _ => unreachable!(),
+                                }
+                            }
+                            Value::Table(table) => table,
+                            _ => panic!("awa"),
+                        };
+
+                        t.set(ctx, name, function).unwrap();
+
+                        //println!("{:?}", lua_table);
+                        //lua_table.set(ctx, item, t).unwrap();
+                        break;
+                    }
+                    lua_table = match lua_table.get(ctx, item) {
+                        Value::Nil => {
+                            lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
+                            match lua_table.get(ctx, item) {
+                                Value::Table(table) => table,
+                                _ => unreachable!(),
+                            }
+                        }
+                        Value::Table(table) => table,
+                        _ => panic!("awa"),
+                    };
+                }
+                let mut lua_table = ctx.globals();
+                //println!("{:?}", lua_table.get(ctx, "bevy_transform"));
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[derive(Reflect)]
+struct HashMapWrapper {
+    #[reflect(ignore)]
+    hashmap: Option<SendWrapper<Vec<ReflectPtr>>>,
 }
 
 pub fn insert_lua_vm(world: &mut World) {
-    world.insert_non_send_resource(LuaVm { lua: Lua::full() });
+    world.init_non_send_resource::<LuaVm>();
+    //world.insert_non_send_resource(LuaVm { lua: Lua::full() });
 }
 
 pub fn lua_asset_handling(world: &mut World) {
@@ -148,6 +353,9 @@ pub fn run_every_tick(world: &mut World) {
         .unwrap()
         .clone();
     for (_, awa) in lua_scripts.iter_mut() {
+        let mut command_queue = CommandQueueWrapper {
+            world: Some(SendWrapper::new(world as *mut World)),
+        };
         for awa in awa.systems.iter_mut() {
             let stashed_function = &awa.lua_func;
             let mut ptr_states = vec![];
@@ -156,64 +364,81 @@ pub fn run_every_tick(world: &mut World) {
                 .try_enter(|ctx| {
                     let func = ctx.fetch(stashed_function);
                     let mut things = vec![];
-                    for (query, component_infos) in &mut awa.queries {
+
+                    for system_parameter in &mut awa.system_parameters {
                         let ptr_state = Rc::new(RefCell::new(PtrState::Valid));
                         let ptr_state2 = ptr_state.clone();
-                        let items = query.iter_mut(world).collect::<Vec<_>>();
-                        let items = items
-                            .into_iter()
-                            .map(|mut a| {
-                                let mut values = vec![];
-                                //a.components();
-                                for (component_id, type_id) in component_infos.iter() {
-                                    let mut x = a.get_mut_by_id(*component_id).unwrap();
-                                    let app_registry = app_registry.read();
-                                    let reflect_data = app_registry.get(*type_id).unwrap();
-                                    let reflect_from_ptr =
-                                        reflect_data.data::<ReflectFromPtr>().unwrap();
-                                    let value =
-                                        unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
-                                    values.push(ReflectPtr::new(
-                                        value,
-                                        ptr_state2.clone(),
-                                        ofr1.clone(),
-                                    ));
-                                }
-                                values
-                            })
-                            .collect::<Vec<_>>();
-                        let iterator_state = ctx.stash(UserData::new_static(
-                            &ctx,
-                            Mutex::new(IteratorState {
-                                components: items,
-                                ptr_state: ptr_state.clone(),
-                            }),
-                        ));
-                        ptr_states.push(ptr_state);
-                        let t = Table::new(&ctx);
-                        t.set(
-                            ctx,
-                            "iter",
-                            Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
-                                let iterator_state = ctx.fetch(&iterator_state).into_value(ctx);
-                                *iterator_state
-                                    .as_static_user_data::<Mutex<IteratorState>>()
-                                    .unwrap()
-                                    .lock()
-                                    .unwrap()
-                                    .ptr_state
-                                    .borrow_mut() = PtrState::Valid;
-                                stack.replace(
+                        match system_parameter {
+                            SystemParameter::Query((query, component_infos)) => {
+                                let items = query.iter_mut(world).collect::<Vec<_>>();
+                                let items = items
+                                    .into_iter()
+                                    .map(|mut a| {
+                                        let mut values = vec![];
+                                        //a.components();
+                                        for (component_id, type_id) in component_infos.iter() {
+                                            let mut x = a.get_mut_by_id(*component_id).unwrap();
+                                            let app_registry = app_registry.read();
+                                            let reflect_data = app_registry.get(*type_id).unwrap();
+                                            let reflect_from_ptr =
+                                                reflect_data.data::<ReflectFromPtr>().unwrap();
+                                            let value = unsafe {
+                                                reflect_from_ptr.as_reflect_mut(x.as_mut())
+                                            };
+                                            values.push(ReflectPtr::new(
+                                                value,
+                                                ptr_state2.clone(),
+                                                ofr1.clone(),
+                                            ));
+                                        }
+                                        values
+                                    })
+                                    .collect::<Vec<_>>();
+                                let iterator_state = ctx.stash(UserData::new_static(
+                                    &ctx,
+                                    Mutex::new(IteratorState {
+                                        components: items,
+                                        ptr_state: ptr_state.clone(),
+                                    }),
+                                ));
+                                ptr_states.push(ptr_state);
+                                let t = Table::new(&ctx);
+                                t.set(
                                     ctx,
-                                    (IteratorState::iterator_fn(&ctx), iterator_state),
-                                );
+                                    "iter",
+                                    Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
+                                        let iterator_state =
+                                            ctx.fetch(&iterator_state).into_value(ctx);
+                                        *iterator_state
+                                            .as_static_user_data::<Mutex<IteratorState>>()
+                                            .unwrap()
+                                            .lock()
+                                            .unwrap()
+                                            .ptr_state
+                                            .borrow_mut() = PtrState::Valid;
+                                        stack.replace(
+                                            ctx,
+                                            (IteratorState::iterator_fn(&ctx), iterator_state),
+                                        );
 
-                                Ok(CallbackReturn::Return)
-                            }),
-                        )
-                        .unwrap();
-                        things.push(t);
+                                        Ok(CallbackReturn::Return)
+                                    }),
+                                )
+                                .unwrap();
+                                things.push(t.into_value(ctx));
+                            }
+                            SystemParameter::CommandQueue => {
+                                let reflect_mut = ReflectPtr::new(
+                                    &mut command_queue,
+                                    ptr_state2.clone(),
+                                    ofr1.clone(),
+                                );
+                                things.push(reflect_mut.into_value(&ctx));
+                                ptr_states.push(ptr_state);
+                            }
+                        }
                     }
+
                     Ok(ctx.stash(Executor::start(ctx, func, Variadic(things))))
                 })
                 .unwrap();
@@ -223,6 +448,7 @@ pub fn run_every_tick(world: &mut World) {
             for ptr_state in ptr_states.iter() {
                 *ptr_state.borrow_mut() = PtrState::Invalid;
             }
+            //command_queue.command_queue.apply(world);
         }
     }
 
@@ -230,7 +456,54 @@ pub fn run_every_tick(world: &mut World) {
     world.insert_non_send_resource(lua);
 }
 
+#[derive(Reflect)]
+pub struct CommandQueueWrapper {
+    #[reflect(ignore)]
+    pub world: Option<SendWrapper<*mut World>>,
+}
+pub fn spawn(this: &mut CommandQueueWrapper, hash_map_wrapper: HashMapWrapper) {
+    let hash_map = hash_map_wrapper.hashmap.unwrap().take();
+    let world = unsafe { this.world.as_mut().unwrap().as_mut().unwrap() };
+    for value in hash_map {
+        let type_id = unsafe {&mut *value.get_data()}.get_represented_type_info().unwrap().type_id();
+        match &value.data {
+            ReflectType::Ptr(_) => {}
+            ReflectType::Boxed(boxed) => {
+                let thing_to_add = boxed.borrow_mut().take().unwrap();
+                /*println!(
+                    "trying to add: {}",
+                    thing_to_add
+                        .get_represented_type_info()
+                        .unwrap()
+                        .type_path()
+                );*/
+                //println!("transform typeid is: {:?}", Transform::type_info().type_id());
+                //println!("this type id is: {:?}", thing_to_add.get_represented_type_info().type_id());
+                let t = &Transform {
+                    translation: Default::default(),
+                    rotation: Default::default(),
+                    scale: Default::default(),
+                };
+                let component_id: ComponentId = world.components().get_id(type_id).unwrap();
+                let mut e: EntityWorldMut = world.spawn_empty();
+                let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
+                unsafe {
+                    e.insert_by_id(
+                        component_id,
+                        OwningPtr::new(NonNull::new(data_ptr).unwrap()),
+                    )
+                };
+            }
+        }
+    }
+}
+
 #[derive(Deref, DerefMut)]
 pub struct LuaVm {
     lua: Lua,
+}
+impl Default for LuaVm {
+    fn default() -> Self {
+        Self { lua: Lua::full() }
+    }
 }
