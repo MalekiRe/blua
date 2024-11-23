@@ -1,5 +1,5 @@
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
-use crate::{spawn, HashMapWrapper, LuaVm, TableReflectWrapper};
+use crate::{lua_wrapped_dynamic_function_call, spawn, HashMapWrapper, LuaVm, TableReflectWrapper};
 use bevy::ecs::component::{ComponentDescriptor, ComponentId};
 use bevy::ecs::prelude::AppFunctionRegistry;
 use bevy::ecs::world::{CommandQueue, FilteredEntityMut};
@@ -198,92 +198,11 @@ impl UserDataPtr for ReflectPtr {
             .get(&self.get_field_value_ref().reflect_type_info().type_id())
         {
             if let Some(function) = function_registry.get(key) {
-                let ptr_state = self.ptr_state.clone();
-                let function_registry = self.function_registry.clone();
-                let f = function.clone();
-                let function = Callback::from_fn(ctx, move |ctx, _fuel, mut stack| {
-                    let mut args_list = ArgList::new();
-                    use bevy::prelude::Function;
-                    let args_uwu: Variadic<Vec<Value>> = stack.consume(ctx)?;
-                    for v in args_uwu {
-                        match v {
-                            Value::Nil => {
-                                todo!()
-                            }
-                            Value::Boolean(bool) => {
-                                args_list = args_list.push_owned(bool);
-                            }
-                            Value::Integer(int) => {
-                                args_list = args_list.push_owned(int);
-                            }
-                            Value::Number(float) => {
-                                args_list = args_list.push_owned(float);
-                            }
-                            Value::String(_) => {
-                                todo!()
-                            }
-                            Value::Table(table) => {
-                                args_list = args_list
-                                    .push_owned(unsafe { TableReflectWrapper::new(table) });
-                            }
-                            Value::Function(_) => {
-                                todo!()
-                            }
-                            Value::Thread(_) => {
-                                todo!()
-                            }
-                            Value::UserData(user_data) => {
-                                if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
-                                    args_list = args_list.push_mut(
-                                        reflect.get_field_value_mut().as_partial_reflect_mut(),
-                                    );
-                                } else {
-                                    todo!()
-                                }
-                            }
-                        }
-                    }
-                    let ret = f.call(args_list).unwrap();
-                    match ret {
-                        Return::Owned(mut owned) => {
-                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f32>()
-                            {
-                                stack.push_front(Value::Number(*awa as f64))
-                            }
-                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f64>()
-                            {
-                                stack.push_front(Value::Number(*awa))
-                            }
-
-                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i32>()
-                            {
-                                stack.push_front(Value::Integer(*awa as i64))
-                            }
-                            if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i64>()
-                            {
-                                stack.push_front(Value::Integer(*awa))
-                            }
-
-                            //println!("THE TYPE ID OF THIS IS: {:?}", owned.get_represented_type_info().unwrap().type_id());
-
-                            let reflect_ptr = ReflectPtr::new_boxed(
-                                owned.try_into_reflect().unwrap(),
-                                ptr_state.clone(),
-                                function_registry.clone(),
-                            );
-                            stack.push_front(reflect_ptr.into_value(&ctx));
-                        }
-                        Return::Ref(_) => {
-                            println!("todo return &");
-                        }
-                        Return::Mut(_) => {
-                            println!("todo return &mut");
-                        }
-                    }
-                    Ok(CallbackReturn::Return)
-                })
-                .into_value(*ctx);
-                return function;
+                return lua_wrapped_dynamic_function_call(
+                    *ctx,
+                    function.clone(),
+                    self.function_registry.clone(),
+                );
             }
         }
         // this is the case where it's not in the function registry

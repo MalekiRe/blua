@@ -90,6 +90,84 @@ pub trait AppExtensionFunctionRegisterTrait {
         function: DynamicFunction<'static>,
     );
 }
+
+pub fn lua_wrapped_dynamic_function_call<'gc>(
+    ctx: Context<'gc>,
+    function: DynamicFunction<'static>,
+    object_function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+) -> Value<'gc> {
+    Callback::from_fn(&ctx, move |context, _fuel, mut stack| {
+        let mut args_list = ArgList::new();
+        use bevy::prelude::Function;
+        let args_uwu: Variadic<Vec<Value>> = stack.consume(context)?;
+        for v in args_uwu {
+            match v {
+                Value::Nil => {
+                    todo!()
+                }
+                Value::Boolean(bool) => {
+                    args_list = args_list.push_owned(bool);
+                }
+                Value::Integer(int) => {
+                    args_list = args_list.push_owned(int);
+                }
+                Value::Number(float) => {
+                    args_list = args_list.push_owned(float);
+                }
+                Value::String(_) => {
+                    todo!()
+                }
+                Value::Table(table) => {
+                    args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
+                }
+                Value::Function(_) => {
+                    todo!()
+                }
+                Value::UserData(user_data) => {
+                    if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
+                        args_list = args_list
+                            .push_mut(reflect.get_field_value_mut().as_partial_reflect_mut());
+                    } else {
+                        todo!()
+                    }
+                }
+                Value::Thread(_) => {}
+            }
+        }
+        let ret = function.call(args_list).unwrap();
+        match ret {
+            Return::Owned(mut owned) => {
+                if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f32>() {
+                    stack.push_front(Value::Number(*awa as f64))
+                }
+                if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f64>() {
+                    stack.push_front(Value::Number(*awa))
+                }
+
+                if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i32>() {
+                    stack.push_front(Value::Integer(*awa as i64))
+                }
+                if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<i64>() {
+                    stack.push_front(Value::Integer(*awa))
+                }
+                let reflect_ptr = ReflectPtr::new_boxed(
+                    owned.try_into_reflect().unwrap(),
+                    Rc::new(RefCell::new(PtrState::Valid)),
+                    object_function_registry.clone(),
+                );
+                stack.push_front(reflect_ptr.into_value(&context));
+            }
+            Return::Ref(_) => {
+                println!("todo return &");
+            }
+            Return::Mut(_) => {
+                println!("todo return &mut");
+            }
+        }
+        Ok(CallbackReturn::Return)
+    })
+    .into_value(ctx)
+}
 impl AppExtensionFunctionRegisterTrait for App {
     fn register_object_function<T: Reflect>(&mut self, function: DynamicFunction<'static>) {
         self.init_non_send_resource::<Rc<RefCell<ObjectFunctionRegistry>>>();
@@ -154,98 +232,7 @@ impl AppExtensionFunctionRegisterTrait for App {
                         let name = function.name().unwrap().to_string();
 
                         let f = f.clone();
-                        let function = Callback::from_fn(&ctx, move |context, _fuel, mut stack| {
-                            let mut args_list = ArgList::new();
-                            use bevy::prelude::Function;
-                            let args_uwu: Variadic<Vec<Value>> = stack.consume(context)?;
-                            for v in args_uwu {
-                                match v {
-                                    Value::Nil => {
-                                        todo!()
-                                    }
-                                    Value::Boolean(bool) => {
-                                        args_list = args_list.push_owned(bool);
-                                    }
-                                    Value::Integer(int) => {
-                                        args_list = args_list.push_owned(int);
-                                    }
-                                    Value::Number(float) => {
-                                        args_list = args_list.push_owned(float);
-                                    }
-                                    Value::String(_) => {
-                                        todo!()
-                                    }
-                                    Value::Table(table) => {
-                                        args_list = args_list
-                                            .push_owned(unsafe { TableReflectWrapper::new(table) });
-                                    }
-                                    Value::Function(_) => {
-                                        todo!()
-                                    }
-                                    Value::Thread(_) => {
-                                        todo!()
-                                    }
-                                    Value::UserData(user_data) => {
-                                        if let Ok(reflect) =
-                                            user_data.downcast_static::<ReflectPtr>()
-                                        {
-                                            args_list = args_list.push_ref(
-                                                reflect.get_field_value_ref().as_partial_reflect(),
-                                            );
-                                        } else {
-                                            todo!()
-                                        }
-                                    }
-                                }
-                            }
-                            //println!("args list: {:#?}", args_list);
-                            let ret = f.call(args_list).unwrap();
-                            match ret {
-                                Return::Owned(mut owned) => {
-                                    if let Some(awa) =
-                                        owned.try_as_reflect().unwrap().downcast_ref::<f32>()
-                                    {
-                                        stack.push_front(Value::Number(*awa as f64))
-                                    }
-                                    if let Some(awa) =
-                                        owned.try_as_reflect().unwrap().downcast_ref::<f64>()
-                                    {
-                                        stack.push_front(Value::Number(*awa))
-                                    }
-
-                                    if let Some(awa) =
-                                        owned.try_as_reflect().unwrap().downcast_ref::<i32>()
-                                    {
-                                        stack.push_front(Value::Integer(*awa as i64))
-                                    }
-                                    if let Some(awa) =
-                                        owned.try_as_reflect().unwrap().downcast_ref::<i64>()
-                                    {
-                                        stack.push_front(Value::Integer(*awa))
-                                    }
-
-                                    //println!("type id from reflected funciton is {:?}", owned.get_represented_type_info().unwrap().type_id());
-
-                                    let owned = owned.try_into_reflect().unwrap();
-                                    //println!("after conversion: {:?}", owned.get_represented_type_info().unwrap().type_id());
-
-                                    let reflect_ptr = ReflectPtr::new_boxed(
-                                        owned,
-                                        Rc::new(RefCell::new(PtrState::Valid)),
-                                        ofr1.clone(),
-                                    );
-                                    stack.push_front(reflect_ptr.into_value(&context));
-                                }
-                                Return::Ref(_) => {
-                                    todo!()
-                                }
-                                Return::Mut(_) => {
-                                    todo!()
-                                }
-                            }
-                            Ok(CallbackReturn::Return)
-                        })
-                        .into_value(ctx);
+                        let function = lua_wrapped_dynamic_function_call(ctx, f, ofr1);
 
                         let t = match lua_table.get(ctx, item) {
                             Value::Nil => {
@@ -258,11 +245,7 @@ impl AppExtensionFunctionRegisterTrait for App {
                             Value::Table(table) => table,
                             _ => panic!("awa"),
                         };
-
                         t.set(ctx, name, function).unwrap();
-
-                        //println!("{:?}", lua_table);
-                        //lua_table.set(ctx, item, t).unwrap();
                         break;
                     }
                     lua_table = match lua_table.get(ctx, item) {
@@ -277,8 +260,6 @@ impl AppExtensionFunctionRegisterTrait for App {
                         _ => panic!("awa"),
                     };
                 }
-                let mut lua_table = ctx.globals();
-                //println!("{:?}", lua_table.get(ctx, "bevy_transform"));
                 Ok(())
             })
             .unwrap();
@@ -293,7 +274,6 @@ struct HashMapWrapper {
 
 pub fn insert_lua_vm(world: &mut World) {
     world.init_non_send_resource::<LuaVm>();
-    //world.insert_non_send_resource(LuaVm { lua: Lua::full() });
 }
 
 pub fn lua_asset_handling(world: &mut World) {
@@ -503,11 +483,6 @@ pub fn spawn(this: &mut CommandQueueWrapper, table: TableReflectWrapper) {
                 ReflectType::Ptr(_) => {}
                 ReflectType::Boxed(boxed) => {
                     let thing_to_add = boxed.borrow_mut().take().unwrap();
-                    let t = &Transform {
-                        translation: Default::default(),
-                        rotation: Default::default(),
-                        scale: Default::default(),
-                    };
                     let component_id: ComponentId = world.components().get_id(type_id).unwrap();
                     let mut e: EntityWorldMut = world.spawn_empty();
                     let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
