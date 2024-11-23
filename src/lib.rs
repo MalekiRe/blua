@@ -47,6 +47,7 @@ impl TableReflectWrapper {
             table: Some(SendWrapper::new(std::mem::transmute(table))),
         }
     }
+    /// Do not hold this past the lifetime of the function you got it as an argument from
     pub unsafe fn take(self) -> Table<'static> {
         self.table.unwrap().take()
     }
@@ -61,23 +62,9 @@ impl Plugin for LuaPlugin {
         app.add_systems(Update, lua_asset_handling);
         app.add_systems(Update, run_every_tick);
         app.register_object_function::<CommandQueueWrapper>(
-            spawn.into_function().with_name("spawn"),
+            CommandQueueWrapper::spawn.into_function().with_name("spawn"),
         );
     }
-}
-
-fn spawn_call(mut args: ArgList) -> Result<Return, FunctionError> {
-    if args.len() != 2 {
-        return Err(FunctionError::ArgCountMismatch {
-            expected: 2,
-            received: args.len(),
-        });
-    }
-
-    let arg1 = args.take_mut::<CommandQueueWrapper>()?;
-    let arg2 = args.take::<TableReflectWrapper>()?;
-    spawn(arg1, arg2);
-    Ok(Return::unit())
 }
 
 #[derive(Component)]
@@ -103,7 +90,7 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
         for v in args_uwu {
             match v {
                 Value::Nil => {
-                    todo!()
+                    args_list = args_list.push_owned(());
                 }
                 Value::Boolean(bool) => {
                     args_list = args_list.push_owned(bool);
@@ -114,13 +101,13 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
                 Value::Number(float) => {
                     args_list = args_list.push_owned(float);
                 }
-                Value::String(_) => {
-                    todo!()
+                Value::String(lua_string) => {
+                    args_list = args_list.push_owned(lua_string.to_string())
                 }
                 Value::Table(table) => {
                     args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
                 }
-                Value::Function(_) => {
+                Value::Function(lua_function) => {
                     todo!()
                 }
                 Value::UserData(user_data) => {
@@ -212,7 +199,6 @@ impl AppExtensionFunctionRegisterTrait for App {
 
         let world = self.world_mut();
 
-        let type_id = TypeId::of::<T>();
         let things = T::type_info()
             .type_path()
             .split("::")
@@ -467,37 +453,39 @@ pub struct CommandQueueWrapper {
     #[reflect(ignore)]
     pub commands: CommandQueue,
 }
-pub fn spawn(this: &mut CommandQueueWrapper, table: TableReflectWrapper) {
-    this.push(move |world: &mut World| {
-        let table = table.table.unwrap().take();
-        for (_key, value) in table {
-            let Ok(value) = value.as_static_user_data::<ReflectPtr>() else {
-                println!("passed non reflect to spawn function");
-                continue;
-            };
-            let type_id = unsafe { &mut *value.get_data() }
-                .get_represented_type_info()
-                .unwrap()
-                .type_id();
-            match &value.data {
-                ReflectType::Ptr(_) => {}
-                ReflectType::Boxed(boxed) => {
-                    let thing_to_add = boxed.borrow_mut().take().unwrap();
-                    let component_id: ComponentId = world.components().get_id(type_id).unwrap();
-                    let mut e: EntityWorldMut = world.spawn_empty();
-                    let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
-                    unsafe {
-                        e.insert_by_id(
-                            component_id,
-                            OwningPtr::new(NonNull::new(data_ptr).unwrap()),
-                        )
-                    };
+
+impl CommandQueueWrapper {
+    pub fn spawn(&mut self, table: TableReflectWrapper) {
+        self.push(move |world: &mut World| {
+            let table = table.table.unwrap().take();
+            for (_key, value) in table {
+                let Ok(value) = value.as_static_user_data::<ReflectPtr>() else {
+                    println!("passed non reflect to spawn function");
+                    continue;
+                };
+                let type_id = unsafe { &mut *value.get_data() }
+                    .get_represented_type_info()
+                    .unwrap()
+                    .type_id();
+                match &value.data {
+                    ReflectType::Ptr(_) => {}
+                    ReflectType::Boxed(boxed) => {
+                        let thing_to_add = boxed.borrow_mut().take().unwrap();
+                        let component_id: ComponentId = world.components().get_id(type_id).unwrap();
+                        let mut e: EntityWorldMut = world.spawn_empty();
+                        let data_ptr = Box::into_raw(thing_to_add) as *mut u8;
+                        unsafe {
+                            e.insert_by_id(
+                                component_id,
+                                OwningPtr::new(NonNull::new(data_ptr).unwrap()),
+                            )
+                        };
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 }
-
 #[derive(Deref, DerefMut)]
 pub struct LuaVm {
     lua: Lua,

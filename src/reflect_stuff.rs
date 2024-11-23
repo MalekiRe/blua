@@ -1,5 +1,5 @@
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
-use crate::{lua_wrapped_dynamic_function_call, spawn, HashMapWrapper, LuaVm, TableReflectWrapper};
+use crate::{lua_wrapped_dynamic_function_call, HashMapWrapper, LuaVm, TableReflectWrapper};
 use bevy::ecs::component::{ComponentDescriptor, ComponentId};
 use bevy::ecs::prelude::AppFunctionRegistry;
 use bevy::ecs::world::{CommandQueue, FilteredEntityMut};
