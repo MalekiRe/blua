@@ -14,8 +14,8 @@ use bevy::ecs::system::SystemBuffer;
 use bevy::ecs::world::CommandQueue;
 use bevy::prelude::*;
 use bevy::ptr::OwningPtr;
-use bevy::reflect::func::{ArgList, DynamicFunction, FunctionRegistry, Return};
-use bevy::reflect::{ReflectFromPtr, Typed};
+use bevy::reflect::func::{ArgList, ArgValue, DynamicFunction, FunctionError, FunctionInfo, FunctionRegistry, IntoReturn, ReflectFn, Return, TypedFunction};
+use bevy::reflect::{impl_reflect, ReflectFromPtr, Typed};
 use piccolo::{Callback, CallbackReturn, Closure, Context, Executor, IntoValue, Lua, Table, TypeError, UserData, Value, Variadic};
 use send_wrapper::SendWrapper;
 use std::any::{Any, TypeId};
@@ -29,6 +29,21 @@ use std::sync::Mutex;
 
 pub struct LuaPlugin;
 
+#[derive(Reflect)]
+pub struct TableReflectWrapper {
+    #[reflect(ignore)]
+    table: Option<SendWrapper<Table<'static>>>
+}
+
+impl TableReflectWrapper {
+    pub unsafe fn new(table: Table) -> TableReflectWrapper {
+        Self { table: Some(SendWrapper::new( std::mem::transmute(table) )) }
+    }
+    pub unsafe fn take(self) -> Table<'static> {
+        self.table.unwrap().take()
+    }
+}
+
 impl Plugin for LuaPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(ReflectPlugin);
@@ -41,6 +56,20 @@ impl Plugin for LuaPlugin {
             spawn.into_function().with_name("spawn"),
         );
     }
+}
+
+fn spawn_call(mut args: ArgList) -> Result<Return, FunctionError> {
+    if args.len() != 2 {
+        return Err(FunctionError::ArgCountMismatch {
+            expected: 2,
+            received: args.len(),
+        });
+    }
+
+    let arg1 = args.take_mut::<CommandQueueWrapper>()?;
+    let arg2 = args.take::<TableReflectWrapper>()?;
+    spawn(arg1, arg2);
+    Ok(Return::unit())
 }
 
 #[derive(Component)]
@@ -117,10 +146,10 @@ impl AppExtensionFunctionRegisterTrait for App {
                         let name = function.name().unwrap().to_string();
 
                         let f = f.clone();
-                        let function = Callback::from_fn(&ctx, move |ctx, _fuel, mut stack| {
+                        let function = Callback::from_fn(&ctx, move |context, _fuel, mut stack| {
                             let mut args_list = ArgList::new();
                             use bevy::prelude::Function;
-                            let args_uwu: Variadic<Vec<Value>> = stack.consume(ctx)?;
+                            let args_uwu: Variadic<Vec<Value>> = stack.consume(context)?;
                             for v in args_uwu {
                                 match v {
                                     Value::Nil => {
@@ -139,19 +168,7 @@ impl AppExtensionFunctionRegisterTrait for App {
                                         todo!()
                                     }
                                     Value::Table(table) => {
-                                        let mut t = Vec::new();
-                                        for (key, value) in table.iter() {
-                                            t.push(match value.as_static_user_data::<ReflectPtr>() {
-                                                Ok(awa) => awa.clone(),
-                                                Err(_) => todo!(),
-                                            });
-                                        }
-                                        let h = HashMapWrapper {
-                                            hashmap: Some(SendWrapper::new(
-                                                t
-                                            )),
-                                        };
-                                        args_list = args_list.push_owned(h);
+                                        args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
                                     }
                                     Value::Function(_) => {
                                         todo!()
@@ -208,7 +225,7 @@ impl AppExtensionFunctionRegisterTrait for App {
                                         Rc::new(RefCell::new(PtrState::Valid)),
                                         ofr1.clone(),
                                     );
-                                    stack.push_front(reflect_ptr.into_value(&ctx));
+                                    stack.push_front(reflect_ptr.into_value(&context));
                                 }
                                 Return::Ref(_) => {
                                     todo!()
@@ -461,24 +478,19 @@ pub struct CommandQueueWrapper {
     #[reflect(ignore)]
     pub world: Option<SendWrapper<*mut World>>,
 }
-pub fn spawn(this: &mut CommandQueueWrapper, hash_map_wrapper: HashMapWrapper) {
-    let hash_map = hash_map_wrapper.hashmap.unwrap().take();
+pub fn spawn<'a>(this: &'a mut CommandQueueWrapper, table: TableReflectWrapper) -> &'a mut CommandQueueWrapper {
+    let table = table.table.unwrap().take();
     let world = unsafe { this.world.as_mut().unwrap().as_mut().unwrap() };
-    for value in hash_map {
+    for (_key, value) in table {
+        let Ok(value) = value.as_static_user_data::<ReflectPtr>() else {
+            println!("passed non reflect to spawn function");
+            continue;
+        };
         let type_id = unsafe {&mut *value.get_data()}.get_represented_type_info().unwrap().type_id();
         match &value.data {
             ReflectType::Ptr(_) => {}
             ReflectType::Boxed(boxed) => {
                 let thing_to_add = boxed.borrow_mut().take().unwrap();
-                /*println!(
-                    "trying to add: {}",
-                    thing_to_add
-                        .get_represented_type_info()
-                        .unwrap()
-                        .type_path()
-                );*/
-                //println!("transform typeid is: {:?}", Transform::type_info().type_id());
-                //println!("this type id is: {:?}", thing_to_add.get_represented_type_info().type_id());
                 let t = &Transform {
                     translation: Default::default(),
                     rotation: Default::default(),
@@ -496,6 +508,7 @@ pub fn spawn(this: &mut CommandQueueWrapper, hash_map_wrapper: HashMapWrapper) {
             }
         }
     }
+    this
 }
 
 #[derive(Deref, DerefMut)]

@@ -1,5 +1,5 @@
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
-use crate::{spawn, HashMapWrapper, LuaVm};
+use crate::{spawn, HashMapWrapper, LuaVm, TableReflectWrapper};
 use bevy::ecs::component::{ComponentDescriptor, ComponentId};
 use bevy::ecs::prelude::AppFunctionRegistry;
 use bevy::ecs::world::{CommandQueue, FilteredEntityMut};
@@ -223,19 +223,7 @@ impl UserDataPtr for ReflectPtr {
                                 todo!()
                             }
                             Value::Table(table) => {
-                                let mut t = Vec::new();
-                                for (key, value) in table.iter() {
-                                    t.push(match value.as_static_user_data::<ReflectPtr>() {
-                                        Ok(awa) => awa.clone(),
-                                        Err(_) => todo!(),
-                                    });
-                                }
-                                let h = HashMapWrapper {
-                                    hashmap: Some(SendWrapper::new(
-                                        t
-                                    )),
-                                };
-                                args_list = args_list.push_owned(h);
+                                args_list = args_list.push_owned(unsafe { TableReflectWrapper::new(table) });
                             }
                             Value::Function(_) => {
                                 todo!()
@@ -255,7 +243,6 @@ impl UserDataPtr for ReflectPtr {
                         }
                     }
                     let ret = f.call(args_list).unwrap();
-                    //println!("WAWAAAAAAA");
                     match ret {
                         Return::Owned(mut owned) => {
                             if let Some(awa) = owned.try_as_reflect().unwrap().downcast_ref::<f32>()
@@ -286,10 +273,10 @@ impl UserDataPtr for ReflectPtr {
                             stack.push_front(reflect_ptr.into_value(&ctx));
                         }
                         Return::Ref(_) => {
-                            todo!()
+                            println!("todo return &");
                         }
                         Return::Mut(_) => {
-                            todo!()
+                            println!("todo return &mut");
                         }
                     }
                     Ok(CallbackReturn::Return)

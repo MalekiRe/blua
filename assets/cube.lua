@@ -19,7 +19,7 @@ function my_system2(commands, query)
         print(transform)
     end
     if (awa == 0) then
-        commands:spawn({ bevy_transform.components.transform.Transform.default() })
+        local _idc = commands:spawn({ bevy_transform.components.transform.Transform.default() })
     end
 end
 
