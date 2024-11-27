@@ -21,9 +21,10 @@ function second_system(my_q)
     end
 end
 
+local third_params = { {bevy_transform.components.transform.Transform.ref}, {simple_test.Stretch.mut} }
 function third(q1, q2)
     for t in q1:iter() do
-        --print(t.translation.z)
+        print(t.translation.z)
     end
 
     for s in q2:iter() do
@@ -50,6 +51,6 @@ end
 
 --app:register_system(my_system, { {bevy_transform.components.transform.Transform.mut} })
 --app:register_system(second_system, { {bevy_transform.components.transform.Transform.mut, simple_test.Stretch.mut} })
-app:register_system(third, { {bevy_transform.components.transform.Transform.mut}, {simple_test.Stretch.mut} })
+app:register_system(third, third_params)
 --app:register_system(try_do_bad, { {bevy_transform.components.transform.Transform.mut} })
 print("hello world!")

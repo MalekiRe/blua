@@ -31,12 +31,7 @@ pub struct LuaSystem {
 }
 
 pub enum SystemParameter {
-    Query(
-        (
-            QueryState<FilteredEntityMut<'static>>,
-            Vec<(ComponentId, TypeId)>,
-        ),
-    ),
+    Query((QueryState<FilteredEntityMut<'static>>, Vec<ComponentType>)),
     CommandQueue,
 }
 
@@ -48,15 +43,17 @@ pub struct ReflectPtr {
 }
 
 pub enum ReflectType {
-    Ptr(*mut dyn Reflect),
+    PtrMut(*mut dyn Reflect),
+    PtrRef(*const dyn Reflect),
     Boxed(Rc<RefCell<Option<Box<dyn Reflect>>>>),
 }
 
 impl Clone for ReflectType {
     fn clone(&self) -> Self {
         match self {
-            ReflectType::Ptr(ptr) => ReflectType::Ptr(*ptr),
             ReflectType::Boxed(boxed) => ReflectType::Boxed(boxed.clone()),
+            ReflectType::PtrMut(ptr) => ReflectType::PtrMut(*ptr),
+            ReflectType::PtrRef(ptr) => ReflectType::PtrRef(*ptr),
         }
     }
 }
@@ -73,13 +70,25 @@ pub enum PtrState {
 }
 
 impl ReflectPtr {
-    pub fn new(
+    pub fn new_mut(
         reflect: &mut dyn Reflect,
         ptr_state: Rc<RefCell<PtrState>>,
         function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
     ) -> Self {
         Self {
-            data: ReflectType::Ptr(reflect as *mut dyn Reflect),
+            data: ReflectType::PtrMut(reflect as *mut dyn Reflect),
+            path: "".to_string(),
+            ptr_state,
+            function_registry,
+        }
+    }
+    pub fn new_ref(
+        reflect: &dyn Reflect,
+        ptr_state: Rc<RefCell<PtrState>>,
+        function_registry: Rc<RefCell<ObjectFunctionRegistry>>,
+    ) -> Self {
+        Self {
+            data: ReflectType::PtrRef(reflect as *const dyn Reflect),
             path: "".to_string(),
             ptr_state,
             function_registry,
@@ -122,7 +131,7 @@ impl ReflectPtr {
         if &*self.ptr_state.borrow() == &PtrState::Invalid {
             panic!("invalid pointer state, saved outside of valid area")
         }
-        let mut reflect = unsafe { &mut *self.get_data() };
+        let mut reflect = unsafe { &mut *self.get_data_mut().unwrap() };
         for field in self.path.split(".") {
             if field.is_empty() {
                 continue;
@@ -144,12 +153,23 @@ impl ReflectPtr {
 impl UserDataPtr for ReflectPtr {
     type Data = dyn Reflect;
 
-    fn get_data(&self) -> *mut Self::Data {
+    fn get_data_mut(&self) -> Option<*mut Self::Data> {
         match &self.data {
-            ReflectType::Ptr(ptr) => *ptr,
+            ReflectType::PtrMut(ptr) => Some(*ptr),
+            ReflectType::PtrRef(_) => None,
             ReflectType::Boxed(boxed) => {
-                ((boxed.borrow_mut().as_mut().unwrap()).as_mut() as *mut dyn Reflect).clone()
+                Some(((boxed.borrow_mut().as_mut().unwrap()).as_mut() as *mut dyn Reflect).clone())
             }
+        }
+    }
+
+    fn get_data(&self) -> *const Self::Data {
+        match &self.data {
+            ReflectType::PtrMut(ptr) => *ptr,
+            ReflectType::Boxed(boxed) => {
+                ((boxed.borrow().as_ref().unwrap()).as_ref() as *const dyn Reflect).clone()
+            }
+            ReflectType::PtrRef(ptr) => *ptr,
         }
     }
 
@@ -304,8 +324,12 @@ impl<'gc> FromValue<'gc> for &'gc WorldMut {
 impl UserDataPtr for WorldMut {
     type Data = World;
 
-    fn get_data(&self) -> *mut Self::Data {
-        self.this.unwrap()
+    fn get_data_mut(&self) -> Option<*mut Self::Data> {
+        Some(self.this.unwrap())
+    }
+
+    fn get_data(&self) -> *const Self::Data {
+        self.this.unwrap() as *const Self::Data
     }
 
     fn edit_metatable<'gc>(&self, _ctx: &Context<'gc>, _table: &mut Table<'gc>) {}
@@ -348,7 +372,7 @@ impl WorldMut {
 
             let function: Function = Function::from_value(ctx, system)?;
 
-            let world = unsafe { &mut *this.get_data() };
+            let world = unsafe { &mut *this.get_data_mut().unwrap() };
 
             let mut system_parameters = vec![];
 
@@ -371,7 +395,6 @@ impl WorldMut {
                 //TODO we might want to restrict this to something like mut vs ref components
                 let mut components = vec![];
                 for (_, component_type) in table.into_iter() {
-                    //println!("awa1");
                     let component_type = UserData::from_value(ctx, component_type)?;
                     let component_type = component_type
                         .downcast_static::<ComponentType>()
@@ -380,29 +403,22 @@ impl WorldMut {
                     match component_type {
                         ComponentType::Ref((component_id, type_id)) => {
                             query_builder.ref_id(component_id);
-                            query_builder.with_id(component_id);
-                            components.push((component_id, type_id));
+                            components.push(component_type);
                         }
                         ComponentType::Mut((component_id, type_id)) => {
                             query_builder.mut_id(component_id);
-                            query_builder.with_id(component_id);
-                            components.push((component_id, type_id));
+                            components.push(component_type);
                         }
                     }
-                    //println!("awa2");
                 }
                 let query_state = query_builder.build();
                 system_parameters.push(SystemParameter::Query((query_state, components)));
-                //println!("hello");
             }
-            //println!("UwU");
             let stashed_function = ctx.stash(function);
-            //println!("UwU");
             systems_vec.borrow_mut().as_mut().unwrap().push(LuaSystem {
                 lua_func: stashed_function,
                 system_parameters,
             });
-            //println!("UwU");
             Ok(CallbackReturn::Return)
         })
     }

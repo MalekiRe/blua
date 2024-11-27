@@ -5,8 +5,8 @@ pub mod userdata_stuff;
 
 use crate::asset_loader::{LuaAssetCommunicator, LuaAssetLoader, LuaScript};
 use crate::reflect_stuff::{
-    ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, ReflectType, SystemParameter,
-    WorldMut,
+    ComponentType, ObjectFunctionRegistry, PtrState, ReflectPlugin, ReflectPtr, ReflectType,
+    SystemParameter, WorldMut,
 };
 use crate::userdata_stuff::{UserDataPtr, ValueExt};
 use bevy::ecs::component::ComponentId;
@@ -32,6 +32,7 @@ use std::ops::DerefMut;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Mutex;
+use bevy::reflect::func::args::Ownership;
 
 pub struct LuaPlugin;
 
@@ -62,7 +63,9 @@ impl Plugin for LuaPlugin {
         app.add_systems(Update, lua_asset_handling);
         app.add_systems(Update, run_every_tick);
         app.register_object_function::<CommandQueueWrapper>(
-            CommandQueueWrapper::spawn.into_function().with_name("spawn"),
+            CommandQueueWrapper::spawn
+                .into_function()
+                .with_name("spawn"),
         );
     }
 }
@@ -87,7 +90,8 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
         let mut args_list = ArgList::new();
         use bevy::prelude::Function;
         let args_uwu: Variadic<Vec<Value>> = stack.consume(context)?;
-        for v in args_uwu {
+        let args = function.info().args();
+        for (v, arg_info) in args_uwu.into_iter().zip(args) {
             match v {
                 Value::Nil => {
                     args_list = args_list.push_owned(());
@@ -112,8 +116,13 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
                 }
                 Value::UserData(user_data) => {
                     if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
-                        args_list = args_list
-                            .push_mut(reflect.get_field_value_mut().as_partial_reflect_mut());
+                        match arg_info.ownership() {
+                            Ownership::Ref => args_list = args_list
+                                .push_ref(reflect.get_field_value_ref().as_partial_reflect()),
+                            Ownership::Mut => args_list = args_list
+                                .push_mut(reflect.get_field_value_mut().as_partial_reflect_mut()),
+                            Ownership::Owned => todo!(),
+                        }
                     } else {
                         todo!()
                     }
@@ -368,20 +377,43 @@ pub fn run_every_tick(world: &mut World) {
                                     .map(|mut a| {
                                         let mut values = vec![];
                                         //a.components();
-                                        for (component_id, type_id) in component_infos.iter() {
-                                            let mut x = a.get_mut_by_id(*component_id).unwrap();
-                                            let app_registry = app_registry.read();
-                                            let reflect_data = app_registry.get(*type_id).unwrap();
-                                            let reflect_from_ptr =
-                                                reflect_data.data::<ReflectFromPtr>().unwrap();
-                                            let value = unsafe {
-                                                reflect_from_ptr.as_reflect_mut(x.as_mut())
-                                            };
-                                            values.push(ReflectPtr::new(
-                                                value,
-                                                ptr_state2.clone(),
-                                                ofr1.clone(),
-                                            ));
+                                        for component_type in component_infos.iter() {
+                                            match component_type {
+                                                ComponentType::Ref((component_id, type_id)) => {
+                                                    let mut x = a.get_by_id(*component_id).unwrap();
+                                                    let app_registry = app_registry.read();
+                                                    let reflect_data =
+                                                        app_registry.get(*type_id).unwrap();
+                                                    let reflect_from_ptr = reflect_data
+                                                        .data::<ReflectFromPtr>()
+                                                        .unwrap();
+                                                    let value =
+                                                        unsafe { reflect_from_ptr.as_reflect(x) };
+                                                    values.push(ReflectPtr::new_ref(
+                                                        value,
+                                                        ptr_state2.clone(),
+                                                        ofr1.clone(),
+                                                    ));
+                                                }
+                                                ComponentType::Mut((component_id, type_id)) => {
+                                                    let mut x =
+                                                        a.get_mut_by_id(*component_id).unwrap();
+                                                    let app_registry = app_registry.read();
+                                                    let reflect_data =
+                                                        app_registry.get(*type_id).unwrap();
+                                                    let reflect_from_ptr = reflect_data
+                                                        .data::<ReflectFromPtr>()
+                                                        .unwrap();
+                                                    let value = unsafe {
+                                                        reflect_from_ptr.as_reflect_mut(x.as_mut())
+                                                    };
+                                                    values.push(ReflectPtr::new_mut(
+                                                        value,
+                                                        ptr_state2.clone(),
+                                                        ofr1.clone(),
+                                                    ));
+                                                }
+                                            }
                                         }
                                         values
                                     })
@@ -420,7 +452,7 @@ pub fn run_every_tick(world: &mut World) {
                                 things.push(t.into_value(ctx));
                             }
                             SystemParameter::CommandQueue => {
-                                let reflect_mut = ReflectPtr::new(
+                                let reflect_mut = ReflectPtr::new_mut(
                                     &mut command_queue,
                                     ptr_state2.clone(),
                                     ofr1.clone(),
@@ -463,12 +495,11 @@ impl CommandQueueWrapper {
                     println!("passed non reflect to spawn function");
                     continue;
                 };
-                let type_id = unsafe { &mut *value.get_data() }
+                let type_id = unsafe { &*value.get_data() }
                     .get_represented_type_info()
                     .unwrap()
                     .type_id();
                 match &value.data {
-                    ReflectType::Ptr(_) => {}
                     ReflectType::Boxed(boxed) => {
                         let thing_to_add = boxed.borrow_mut().take().unwrap();
                         let component_id: ComponentId = world.components().get_id(type_id).unwrap();
@@ -480,6 +511,10 @@ impl CommandQueueWrapper {
                                 OwningPtr::new(NonNull::new(data_ptr).unwrap()),
                             )
                         };
+                    }
+                    _ => {
+                        eprintln!("error non boxed component in spawn function");
+                        continue;
                     }
                 }
             }

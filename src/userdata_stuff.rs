@@ -1,4 +1,6 @@
-use piccolo::{Callback, CallbackReturn, Context, FromValue, IntoValue, Table, TypeError, UserData, Value};
+use piccolo::{
+    Callback, CallbackReturn, Context, FromValue, IntoValue, Table, TypeError, UserData, Value,
+};
 
 pub trait UserDataPtr: Sized + 'static
 where
@@ -6,7 +8,9 @@ where
 {
     type Data: ?Sized;
 
-    fn get_data(&self) -> *mut Self::Data;
+    fn get_data_mut(&self) -> Option<*mut Self::Data>;
+
+    fn get_data(&self) -> *const Self::Data;
 
     fn into_value<'gc>(self, ctx: &Context<'gc>) -> Value<'gc> {
         let metatable = self.metatable(ctx);
