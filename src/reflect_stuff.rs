@@ -33,6 +33,7 @@ pub struct LuaSystem {
 pub enum SystemParameter {
     Query((QueryState<FilteredEntityMut<'static>>, Vec<ComponentType>)),
     CommandQueue,
+    Resource(ComponentType),
 }
 
 pub struct ReflectPtr {
@@ -387,6 +388,13 @@ impl WorldMut {
                     //println!("hello");
                     continue;
                 }
+                if let Ok(resource_component_type) =
+                    system_parameter.as_static_user_data::<ComponentType>()
+                {
+                    system_parameters
+                        .push(SystemParameter::Resource(resource_component_type.clone()));
+                    continue;
+                }
 
                 let table = Table::from_value(ctx, system_parameter)?;
                 //println!("UwU");
@@ -499,6 +507,74 @@ fn register_components_and_markers(world: &mut World) {
                             //println!("THIS ONE WAS TRANSOFMR");
                             //println!("type id of the transfomr is: {:?}", type_id);
                         }
+
+                        t.set(
+                            ctx,
+                            "ref",
+                            UserData::new_static(&ctx, ComponentType::Ref((component_id, type_id))),
+                        )
+                        .unwrap();
+                        t.set(
+                            ctx,
+                            "mut",
+                            UserData::new_static(&ctx, ComponentType::Mut((component_id, type_id))),
+                        )
+                        .unwrap();
+
+                        break;
+                    }
+                    lua_table = match lua_table.get(ctx, item).unwrap() {
+                        Value::Nil => {
+                            lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
+                            match lua_table.get(ctx, item).unwrap() {
+                                Value::Table(table) => table,
+                                _ => unreachable!(),
+                            }
+                        }
+                        Value::Table(table) => table,
+                        _ => panic!("awa"),
+                    };
+                }
+                Ok(())
+            })
+            .unwrap();
+        }
+        // now for resources
+        println!("THE RESOURCES IS");
+        for (resource, _) in world.iter_resources() {
+            let type_id = resource.type_id().unwrap();
+            let r = registry.read();
+            let Some(type_registration) = r.get(type_id) else {
+                continue;
+            };
+
+            let component_id = resource.id();
+
+            let things = type_registration
+                .type_info()
+                .type_path()
+                .split("::")
+                .collect::<Vec<&str>>();
+
+            // uncomment this if you wanna see the path of all the things aviable to you
+            println!("{:?}", things);
+
+            lua.try_enter(|ctx| {
+                let mut lua_table = ctx.globals();
+                let len = things.len();
+                for (i, item) in things.into_iter().enumerate() {
+                    if i + 1 == len {
+                        let t = match lua_table.get(ctx, item).unwrap() {
+                            Value::Nil => {
+                                lua_table.set(ctx, item, Table::new(&ctx)).unwrap();
+                                match lua_table.get(ctx, item).unwrap() {
+                                    Value::Table(table) => table,
+                                    _ => unreachable!(),
+                                }
+                            }
+                            Value::Table(table) => table,
+                            _ => panic!("awa"),
+                        };
 
                         t.set(
                             ctx,

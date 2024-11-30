@@ -14,6 +14,7 @@ use bevy::ecs::system::SystemBuffer;
 use bevy::ecs::world::CommandQueue;
 use bevy::prelude::*;
 use bevy::ptr::OwningPtr;
+use bevy::reflect::func::args::Ownership;
 use bevy::reflect::func::{
     ArgList, ArgValue, DynamicFunction, FunctionError, FunctionInfo, FunctionRegistry, IntoReturn,
     ReflectFn, Return, TypedFunction,
@@ -32,7 +33,6 @@ use std::ops::DerefMut;
 use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Mutex;
-use bevy::reflect::func::args::Ownership;
 
 pub struct LuaPlugin;
 
@@ -117,10 +117,15 @@ pub fn lua_wrapped_dynamic_function_call<'gc>(
                 Value::UserData(user_data) => {
                     if let Ok(reflect) = user_data.downcast_static::<ReflectPtr>() {
                         match arg_info.ownership() {
-                            Ownership::Ref => args_list = args_list
-                                .push_ref(reflect.get_field_value_ref().as_partial_reflect()),
-                            Ownership::Mut => args_list = args_list
-                                .push_mut(reflect.get_field_value_mut().as_partial_reflect_mut()),
+                            Ownership::Ref => {
+                                args_list = args_list
+                                    .push_ref(reflect.get_field_value_ref().as_partial_reflect())
+                            }
+                            Ownership::Mut => {
+                                args_list = args_list.push_mut(
+                                    reflect.get_field_value_mut().as_partial_reflect_mut(),
+                                )
+                            }
                             Ownership::Owned => todo!(),
                         }
                     } else {
@@ -459,6 +464,45 @@ pub fn run_every_tick(world: &mut World) {
                                 );
                                 things.push(reflect_mut.into_value(&ctx));
                                 ptr_states.push(ptr_state);
+                            }
+                            SystemParameter::Resource(resource_component_type) => {
+                                match resource_component_type {
+                                    ComponentType::Ref((component_id, type_id)) => {
+                                        let mut x =
+                                            world.get_resource_by_id(*component_id).unwrap();
+                                        let app_registry = app_registry.read();
+                                        let reflect_data = app_registry.get(*type_id).unwrap();
+                                        let reflect_from_ptr =
+                                            reflect_data.data::<ReflectFromPtr>().unwrap();
+                                        let value = unsafe { reflect_from_ptr.as_reflect(x) };
+                                        things.push(
+                                            ReflectPtr::new_ref(
+                                                value,
+                                                ptr_state2.clone(),
+                                                ofr1.clone(),
+                                            )
+                                            .into_value(&ctx),
+                                        );
+                                    }
+                                    ComponentType::Mut((component_id, type_id)) => {
+                                        let mut x =
+                                            world.get_resource_mut_by_id(*component_id).unwrap();
+                                        let app_registry = app_registry.read();
+                                        let reflect_data = app_registry.get(*type_id).unwrap();
+                                        let reflect_from_ptr =
+                                            reflect_data.data::<ReflectFromPtr>().unwrap();
+                                        let value =
+                                            unsafe { reflect_from_ptr.as_reflect_mut(x.as_mut()) };
+                                        things.push(
+                                            ReflectPtr::new_mut(
+                                                value,
+                                                ptr_state2.clone(),
+                                                ofr1.clone(),
+                                            )
+                                            .into_value(&ctx),
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

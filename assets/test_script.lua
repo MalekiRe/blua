@@ -49,8 +49,15 @@ function try_do_bad(q)
     end
 end
 
+
+local test_params = {bevy_time.time["Time<()>"].ref}
+function test_system(time_resource)
+    print(time_resource:elapsed_secs())
+end
+
 --app:register_system(my_system, { {bevy_transform.components.transform.Transform.mut} })
 --app:register_system(second_system, { {bevy_transform.components.transform.Transform.mut, simple_test.Stretch.mut} })
-app:register_system(third, third_params)
+--app:register_system(third, third_params)
+app:register_system(test_system, test_params)
 --app:register_system(try_do_bad, { {bevy_transform.components.transform.Transform.mut} })
 print("hello world!")

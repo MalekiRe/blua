@@ -22,6 +22,11 @@ fn main() {
             .into_function()
             .with_name("get_sum_with"),
     );
+    app.register_object_function::<Time<()>>(
+        Time::<()>::elapsed_secs
+            .into_function()
+            .with_name("elapsed_secs"),
+    );
     app.run();
 }
 
